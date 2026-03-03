@@ -703,7 +703,7 @@ export default function LandingPage() {
                 {
                   quote:"I send the shareable link to clients instead of a PDF. They can see every number, every assumption. It's made me look more credible than any other tool I've used.",
                   name:'James R.',
-                  role:'Buyer's agent — Austin, TX',
+                  role:"Buyer's agent — Austin, TX",
                   delay:'d3',
                 },
               ].map((t, i) => (

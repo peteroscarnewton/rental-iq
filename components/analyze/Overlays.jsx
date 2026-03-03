@@ -122,7 +122,7 @@ export function ShareToolbar({data, dealId}) {
   );
 }
 
-export export function FloatingChat({data,investorProfile,onUpdateAnalysis,openRef}) {
+export function FloatingChat({data,investorProfile,onUpdateAnalysis,openRef}) {
   const [open,setOpen]           = useState(false);
   const [input,setInput]         = useState('');
   const [history,setHistory]     = useState([]);
