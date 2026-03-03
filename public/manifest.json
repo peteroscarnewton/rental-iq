@@ -1,0 +1,75 @@
+{
+  "name": "RentalIQ \u2014 Rental Property Analyzer",
+  "short_name": "RentalIQ",
+  "description": "Instant rental property analysis. Paste a Zillow or Redfin URL and get cap rate, cash flow, and a buy/pass verdict in seconds.",
+  "start_url": "/analyze",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f5f5f8",
+  "theme_color": "#166638",
+  "lang": "en",
+  "scope": "/",
+  "categories": [
+    "finance",
+    "real-estate",
+    "business"
+  ],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Analyze a Property",
+      "short_name": "Analyze",
+      "description": "Start a new property analysis",
+      "url": "/",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Find My Market",
+      "short_name": "Find Market",
+      "description": "Find the best rental markets",
+      "url": "/scout",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "My Deals",
+      "short_name": "Deals",
+      "description": "View your saved analyses",
+      "url": "/dashboard",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+User-agent: *
+Allow: /
+Allow: /share/
+
+# Don't index private pages
+Disallow: /dashboard
+Disallow: /admin
+Disallow: /compare
+Disallow: /auth
+Disallow: /api/
+
+# Sitemap
+Sitemap: https://rentaliq.app/sitemap.xml
