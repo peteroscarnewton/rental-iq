@@ -1,4 +1,5 @@
 /**
+import { callGemini, extractGeminiText } from '../../lib/geminiClient.js';
  * /api/scout-market
  * ─────────────────────────────────────────────────────────────────────────────
  * Phase 4C: AI-powered market intelligence grounded in live data.
@@ -284,22 +285,15 @@ Format as JSON:
       return res.status(503).json({ error: 'AI service not configured.' });
     }
 
-    const aiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent?key=${geminiKey}`,
-      {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature:     0.3, // lower = more factual, less creative
-            maxOutputTokens: 800,
-            responseMimeType: 'application/json',
-          },
-        }),
-        signal: AbortSignal.timeout(25000),
-      }
-    );
+    let aiRes;
+    try {
+      ({ res: aiRes } = await callGemini(geminiKey, {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 800 },
+      }, { timeoutMs: 25000 }));
+    } catch (e) {
+      return res.status(502).json({ error: 'AI service unavailable. Please try again.' });
+    }
 
     if (!aiRes.ok) {
       const err = await aiRes.text().catch(() => '');
@@ -308,7 +302,7 @@ Format as JSON:
     }
 
     const aiJson = await aiRes.json();
-    const rawText = aiJson?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const rawText = extractGeminiText(aiJson);
 
     let parsed;
     try {

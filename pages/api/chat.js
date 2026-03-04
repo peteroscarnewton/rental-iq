@@ -1,4 +1,5 @@
 import { rateLimitWithAuth } from '../../lib/rateLimit.js';
+import { callGemini, extractGeminiText } from '../../lib/geminiClient.js';
 
 const CHAT_SYSTEM_PROMPT = `You are a sharp, no-BS real estate investment advisor with a Rich Dad mindset. You think in leverage, equity, and total return - not just monthly cashflow. The user has already run a full analysis. You have that analysis and their investor profile.
 
@@ -79,12 +80,9 @@ export default async function handler(req, res) {
 
   let geminiRes;
   try {
-    geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent?key=${apiKey}`,
-      { method:'POST', headers:{'content-type':'application/json','x-goog-api-key':apiKey}, body:JSON.stringify(geminiPayload), signal:AbortSignal.timeout(25000) }
-    );
-  } catch {
-    return res.status(504).json({ error: 'Request timed out. Please try again.' });
+    ({ res: geminiRes } = await callGemini(apiKey, geminiPayload, { timeoutMs: 25000 }));
+  } catch (e) {
+    return res.status(504).json({ error: 'Request timed out or all models unavailable. Please try again.' });
   }
 
   if (!geminiRes.ok) {
@@ -95,7 +93,7 @@ export default async function handler(req, res) {
   }
 
   const geminiBody = await geminiRes.json();
-  const rawText = geminiBody?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const rawText = extractGeminiText(geminiBody);
   const jsonMatch = rawText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) return res.status(502).json({ error: 'Could not parse response.' });
 

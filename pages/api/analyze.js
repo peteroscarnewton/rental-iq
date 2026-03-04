@@ -1,5 +1,6 @@
 import { rateLimitWithAuth }  from "../../lib/rateLimit.js";
 import { authOptions }        from './auth/[...nextauth]';
+import { callGemini, extractGeminiText } from "../../lib/geminiClient.js";
 import { getMarketData, stateTaxRate, stateInsRate, cityAppreciation,
          getEmploymentData, getCaseShillerData,
          getTreasuryYield, getSP500Return, getPmiRate, getMonthlyPmi, getClosingCostPct, getZoriForCity,
@@ -792,36 +793,17 @@ export default async function handler(req, res) {
   const geminiPayload = {
     system_instruction: { parts: [{ text: SYSTEM_PROMPT_TEMPLATE(settings) }] },
     contents: [{ role: 'user', parts: [{ text: userMsg }] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 8192 },
+    generationConfig: { temperature: 0.2, maxOutputTokens: 16000 },
   };
 
-  // Retry helper - up to 2 attempts for transient 429/503
-  async function callGemini() {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const r = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent?key=${apiKey}`,
-          { method:'POST', headers:{'content-type':'application/json','x-goog-api-key':apiKey}, body:JSON.stringify(geminiPayload), signal:AbortSignal.timeout(50000) }
-        );
-        if ((r.status === 429 || r.status === 503) && attempt < 2) {
-          await new Promise(ok => setTimeout(ok, 2000 * attempt));
-          continue;
-        }
-        return r;
-      } catch (e) {
-        if (attempt === 2) throw e;
-        await new Promise(ok => setTimeout(ok, 1500));
-      }
-    }
-  }
-
-  let geminiRes;
-  try { geminiRes = await callGemini(); }
-  catch (e) {
+  let geminiRes, modelUsed;
+  try {
+    ({ res: geminiRes, modelUsed } = await callGemini(apiKey, geminiPayload));
+  } catch (e) {
     const isTimeout = e?.name === 'TimeoutError' || e?.message?.includes('timed out') || e?.message?.includes('abort');
     return res.status(504).json({ error: isTimeout
       ? 'Analysis timed out - this sometimes happens on large properties. Please try again.'
-      : 'Could not reach AI service. Check your server network settings and GEMINI_API_KEY.' });
+      : `Could not reach AI service: ${e.message}` });
   }
 
   if (!geminiRes.ok) {
@@ -849,10 +831,7 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: apiErrMsg ? `AI error: ${apiErrMsg}` : 'AI returned no response. Check that GEMINI_API_KEY is valid and has quota.' });
   }
 
-  // gemini-2.5-flash is a thinking model - parts[0] may be a "thought" block.
-  // Find the first part that is NOT a thought to get the actual text response.
-  const parts = geminiBody?.candidates?.[0]?.content?.parts || [];
-  const rawText = (parts.find(p => !p.thought && p.text) || parts[0] || {}).text || '';
+  const rawText = extractGeminiText(geminiBody);
   // If Gemini hit the token limit, the JSON will be truncated and unparseable
   const finishReasonFinal = geminiBody?.candidates?.[0]?.finishReason;
   if (finishReasonFinal === 'MAX_TOKENS' && !rawText.includes('}')) {
