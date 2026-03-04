@@ -792,7 +792,8 @@ export default async function handler(req, res) {
   const geminiPayload = {
     system_instruction: { parts: [{ text: SYSTEM_PROMPT_TEMPLATE(settings) }] },
     contents: [{ role: 'user', parts: [{ text: userMsg }] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 8192 },
+    generationConfig: { temperature: 0.2, maxOutputTokens: 16384 },
+    thinkingConfig: { thinkingBudget: 0 },
   };
 
   // Retry helper - up to 2 attempts for transient 429/503
@@ -849,7 +850,16 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: apiErrMsg ? `AI error: ${apiErrMsg}` : 'AI returned no response. Check that GEMINI_API_KEY is valid and has quota.' });
   }
 
-  const rawText    = geminiBody?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  // gemini-2.5-flash is a thinking model - parts[0] may be a "thought" block.
+  // Find the first part that is NOT a thought to get the actual text response.
+  const parts = geminiBody?.candidates?.[0]?.content?.parts || [];
+  const rawText = (parts.find(p => !p.thought && p.text) || parts[0] || {}).text || '';
+  // If Gemini hit the token limit, the JSON will be truncated and unparseable
+  const finishReasonFinal = geminiBody?.candidates?.[0]?.finishReason;
+  if (finishReasonFinal === 'MAX_TOKENS' && !rawText.includes('}')) {
+    return res.status(502).json({ error: 'AI response was cut off. Please try again.' });
+  }
+
   const jsonMatch  = rawText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) return res.status(502).json({ error: 'Could not parse AI response. Please try again.' });
 
