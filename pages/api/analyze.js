@@ -792,8 +792,7 @@ export default async function handler(req, res) {
   const geminiPayload = {
     system_instruction: { parts: [{ text: SYSTEM_PROMPT_TEMPLATE(settings) }] },
     contents: [{ role: 'user', parts: [{ text: userMsg }] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 16384 },
-    thinkingConfig: { thinkingBudget: 0 },
+    generationConfig: { temperature: 0.2, maxOutputTokens: 8192 },
   };
 
   // Retry helper - up to 2 attempts for transient 429/503
@@ -801,7 +800,7 @@ export default async function handler(req, res) {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const r = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
           { method:'POST', headers:{'content-type':'application/json','x-goog-api-key':apiKey}, body:JSON.stringify(geminiPayload), signal:AbortSignal.timeout(50000) }
         );
         if ((r.status === 429 || r.status === 503) && attempt < 2) {
