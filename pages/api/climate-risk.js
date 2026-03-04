@@ -12,9 +12,9 @@
  */
 
 import { fetchClimateRisk,
-import { rateLimit } from '../../lib/rateLimit.js';
          geocodeToCountyFips,
          getPrimaryCountyFips }  from '../../lib/climateRiskFetcher.js';
+import { rateLimit }             from '../../lib/rateLimit.js';
 import { getSupabaseAdmin }      from '../../lib/supabase.js';
 
 export const config = { api: { bodyParser: false }, maxDuration: 15 };
