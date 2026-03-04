@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { C, clamp, scoreColor } from '../tokens';
 import { Label, Card, Pill, AnimatedBar } from '../InputComponents';
+import { STRRegBadge } from './STRRegBadge';
 
 export function STRDataCard({data: strData, loading, analysisData}) {
   // Only show for SFR/condo

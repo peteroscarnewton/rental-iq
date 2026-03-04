@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { C, clamp, scoreColor } from '../tokens';
+const verdictColor = v => v === 'YES' ? C.green : v === 'NO' ? C.red : C.amber;
 import { Label, Card, Pill, AnimatedBar } from '../InputComponents';
 import { getMarketData } from '../marketHelpers';
 const normalizeRent = s => (s || '').replace(/\\s+/g, '').toLowerCase();

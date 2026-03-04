@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { C, clamp, scoreColor } from '../tokens';
 import { Label, Card, Pill, AnimatedBar } from '../InputComponents';
+import { ScoreRing } from './ScoreRing';
 
 export function ScoreBreakdown({data, isEdited}) {
   const score=clamp(parseInt(data.overallScore,10)||0,0,100);
