@@ -222,7 +222,10 @@ export default async function handler(req, res) {
         return res.status(401).json({ error: 'Sign in to run an analysis.', code: 'UNAUTHENTICATED' });
       }
 
-      const db = getSupabaseAdmin();
+      let db = null;
+  try { db = getSupabaseAdmin(); } catch (e) {
+    console.warn("[analyze] Supabase unavailable, skipping live enrichment:", e.message);
+  }
       const { data: tokenResult, error: tokenError } = await db.rpc('deduct_token', {
         p_user_id: session.user.id,
       });
@@ -428,7 +431,10 @@ export default async function handler(req, res) {
   const cityForCbsa = settings.city || city || '';
   const stateForCbsa = settings.stateCode || stateCode || '';
   const cbsaCode = resolveCbsaForCity(cityForCbsa, stateForCbsa);
-  const db = getSupabaseAdmin();
+  let db = null;
+  try { db = getSupabaseAdmin(); } catch (e) {
+    console.warn("[analyze] Supabase unavailable, skipping live enrichment:", e.message);
+  }
 
   let buildingPermits = null;
   let metroGrowth = null;
