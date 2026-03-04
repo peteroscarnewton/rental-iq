@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
 import { C } from './tokens';
+import { generateDealMemo } from '../../lib/pdfExport';
 
 export function ShareToolbar({data, dealId}) {
   const [shareUrl,      setShareUrl]      = useState(null);

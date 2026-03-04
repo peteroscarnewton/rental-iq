@@ -10,6 +10,11 @@ import { rateLimitWithAuth }  from '../../../lib/rateLimit.js';
 const VERDICT_COLOR = { YES: '#166638', NO: '#a62626', MAYBE: '#8a5800' };
 const VERDICT_BG    = { YES: '#ecf6f1', NO: '#fdf0f0', MAYBE: '#fdf4e8' };
 
+// Escape HTML special chars to prevent XSS in email template
+function esc(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 function buildEmailHtml(data, recipientEmail, shareUrl) {
   const verdict      = (data.verdict || 'MAYBE').toUpperCase();
   const score        = data.overallScore || 0;
@@ -27,8 +32,8 @@ function buildEmailHtml(data, recipientEmail, shareUrl) {
     const color = m.status === 'good' ? '#166638' : m.status === 'bad' ? '#a62626' : '#8a5800';
     return `
       <tr>
-        <td style="padding:8px 12px;border-bottom:1px solid #eaeaef;font-size:13px;color:#72727a">${m.label}</td>
-        <td style="padding:8px 12px;border-bottom:1px solid #eaeaef;font-size:13px;font-weight:600;color:${color};text-align:right">${m.value}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #eaeaef;font-size:13px;color:#72727a">${esc(m.label)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #eaeaef;font-size:13px;font-weight:600;color:${color};text-align:right">${esc(m.value)}</td>
       </tr>`;
   }).join('');
 
@@ -47,7 +52,7 @@ function buildEmailHtml(data, recipientEmail, shareUrl) {
     <!-- Header -->
     <div style="padding:24px 28px 20px;border-bottom:1px solid #eaeaef">
       <div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#72727a;margin-bottom:4px">RentalIQ Analysis</div>
-      <div style="font-size:20px;font-weight:700;color:#0d0d0f;line-height:1.2">${address}${city ? `<span style="font-size:14px;font-weight:400;color:#72727a"> · ${city}</span>` : ''}</div>
+      <div style="font-size:20px;font-weight:700;color:#0d0d0f;line-height:1.2">${esc(address)}${city ? `<span style="font-size:14px;font-weight:400;color:#72727a"> · ${esc(city)}</span>` : ''}</div>
     </div>
 
     <!-- Verdict -->
@@ -55,8 +60,8 @@ function buildEmailHtml(data, recipientEmail, shareUrl) {
       <div style="display:inline-block;background:${vColor};color:#fff;font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;padding:4px 12px;border-radius:100px;margin-bottom:10px">${verdict}</div>
       <div style="font-size:13px;color:#72727a">
         RentalIQ Score: <strong style="color:${vColor}">${score}/100</strong>
-        ${price ? ` · Price: <strong style="color:#0d0d0f">${price}</strong>` : ''}
-        ${rent  ? ` · Rent: <strong style="color:#0d0d0f">${rent}/mo</strong>` : ''}
+        ${price ? ` · Price: <strong style="color:#0d0d0f">${esc(price)}</strong>` : ''}
+        ${rent  ? ` · Rent: <strong style="color:#0d0d0f">${esc(rent)}/mo</strong>` : ''}
       </div>
     </div>
 
@@ -70,16 +75,16 @@ function buildEmailHtml(data, recipientEmail, shareUrl) {
     ${narrative ? `
     <div style="padding:20px 28px;border-top:1px solid #eaeaef">
       <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#72727a;margin-bottom:10px">AI Analysis</div>
-      <div style="font-size:13.5px;color:#0d0d0f;line-height:1.7">${narrative.replace(/\n/g,'<br/>')}</div>
+      <div style="font-size:13.5px;color:#0d0d0f;line-height:1.7">${esc(narrative).replace(/\n/g,'<br/>')}</div>
     </div>` : ''}
 
     ${shareSection}
 
     <!-- Settings used -->
     <div style="padding:16px 28px;background:#f5f5f8;font-size:11.5px;color:#72727a;line-height:1.8">
-      ${s.cashPurchase ? 'Cash purchase' : `${s.downPaymentPct || 20}% down · ${s.interestRate || 7.25}% rate`}
+      ${s.cashPurchase ? 'Cash purchase' : `${parseFloat(s.downPaymentPct) || 20}% down · ${parseFloat(s.interestRate) || 7.25}% rate`}
       ${s.selfManage ? ' · Self-managed' : ' · With property manager'}
-      ${s.investorGoal ? ` · Goal: ${s.investorGoal}` : ''}
+      ${s.investorGoal ? ` · Goal: ${esc(s.investorGoal)}` : ''}
     </div>
 
     <!-- Footer -->
@@ -144,7 +149,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         from:    'RentalIQ <reports@' + (process.env.EMAIL_FROM_DOMAIN || 'rentaliq.app') + '>',
         to:      [session.user.email],
-        subject: `${verdict}: ${address} - Your RentalIQ Report`,
+        subject: `${verdict}: ${esc(address)} - Your RentalIQ Report`,
         html,
       }),
       signal: AbortSignal.timeout(12000),

@@ -16,6 +16,7 @@
  */
 
 import { fetchSchoolRating } from '../../lib/addressIntelFetcher.js';
+import { rateLimit } from '../../lib/rateLimit.js';
 import { getSupabaseAdmin }   from '../../lib/supabase.js';
 
 export const config = { api: { bodyParser: false }, maxDuration: 12 };
@@ -24,6 +25,8 @@ const CACHE_TTL_DAYS = 365;
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
+  if (!rateLimit(req, { max: 30, windowMs: 60_000 })) return res.status(429).json({ error: 'Too many requests. Please wait a minute.' });
+
 
   const { zip } = req.query;
   if (!zip || !/^\d{5}$/.test(zip)) {

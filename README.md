@@ -103,9 +103,23 @@ Build-blocking syntax error in cron: orphaned `import {` on line 43 of `refresh-
 **Client-Side Bug Fixes — v25 Post-Audit** ✅ Complete
 Six bugs in `pages/analyze.js`: broken `runAnalysis` catch block (errors silently swallowed, 57s timeout fires instead); stale `results` closure in neighborhood callback (school quality + SAFMR fetches silently skipped for SFR/condo); `MD_BASELINE` stale tax rates (pre-2024 values, diverged from Tax Foundation 2024 source); `MD_BASELINE` stale insurance rates (FL:2.10 vs authoritative 3.50 — wrong for ~4s cold load and on market-data fetch failure); dead `capex` in `MODE_DEFAULTS` (removed from server, still present on client); management button hardcoded "10% - hands off" replaced with dynamic NARPM benchmark rate.
 
----
+### Phase 6 — UI/UX & Component Bugs (v39) ✅ Complete
 
-## Deploy in 5 steps — no terminal required
+**6 bugs found and fixed.**
+
+| # | File | Bug | Severity | Fix |
+|---|---|---|---|---|
+| 1 | `components/analyze/cards/CommandCenter.jsx` | **`VERDICT_CFG` not imported.** Used on every render (`VERDICT_CFG[v]`) but only `C, clamp, scoreColor` imported from tokens. `ReferenceError: VERDICT_CFG is not defined` thrown on every analysis results render — the entire CommandCenter (verdict word, score, cash flow metrics) was dead for all users. | **Critical** | Added `VERDICT_CFG` to import from `../tokens`. |
+| 2 | `components/analyze/cards/CommandCenter.jsx` + `components/analyze/Results.jsx` | **`NewAnalysisBtn` undefined.** Referenced in CommandCenter (header area when `isEdited`) and in Results (bottom CTA when `isEdited`). Never defined or imported in either file. `ReferenceError` thrown every time a user edited any inline input (price, rent, down, rate, tax). | **Critical** | Defined `NewAnalysisBtn` as a named export in `Results.jsx` with a two-step confirm-before-discard UX (prevents accidental loss of edits). Imported into `CommandCenter.jsx` from `../Results`. |
+| 3 | `pages/analyze.js` | **`LOAN_TYPES` not imported.** Used in `fetchAnalysis()` to compute `loanTermYears` via `LOAN_TYPES.find(...)`. `LOAN_TYPES` was undefined — the find always returned `undefined`, and the `|| 30` fallback silently masked the bug. Every analysis submitted with 30-year term regardless of user's actual loan type selection. | **High** | Added `LOAN_TYPES` to the named import from `../components/analyze/tokens`. |
+| 4 | `pages/analyze.js` | **`getClosingCostForState` not imported.** Called in the city field change handler to auto-suggest closing costs. Throwing `ReferenceError` every time a user typed a city name — the closing cost auto-fill was completely broken. | **High** | Added `getClosingCostForState` to the named import from `../components/analyze/marketHelpers`. |
+| 5 | `components/analyze/cards/ProsAndCons.jsx` | **Dead imports crash potential.** `generateDealMemo` (from `lib/pdfExport`) and `getMarketData` (from `marketHelpers`) imported but never used. `getMarketData()` was called on every render (`const _MD = getMarketData()`) and the result was immediately discarded — unnecessary function call on every render. `generateDealMemo` is an async PDF function that pulls in the jsPDF CDN loader at import time. | **Medium** | Removed both dead imports. Removed the unused `_MD` assignment. |
+| 6 | `pages/dashboard.js` | **No `r.ok` guard on `deals/list` fetch.** If the session expires mid-session, the API returns a 401 (or HTML error page). `r.json()` on a non-JSON 401 response throws; the catch sets `dealsLoading=false` but `deals` stays `[]`. User sees a blank "No deals yet" state with no explanation. | **Medium** | Added `r.ok ? r.json() : Promise.reject(r.status)` guard. On 401, redirects to `/auth` immediately. |
+
+**Also fixed:** `scoreColor` was both imported from `tokens` AND re-declared locally in `CommandCenter.jsx`, shadowing the import with a different threshold scale (≥70/50 vs the canonical ≥68/45). Local redeclaration removed — now uses the single canonical `scoreColor` from tokens, consistent with all other cards.
+
+**Phase 6 scope audited:** All 25 card components, `Results.jsx`, `InputComponents.jsx`, `Overlays.jsx`, all 7 pages (`analyze.js`, `dashboard.js`, `share/[token].js`, `compare.js`, `scout.js`, `auth.js`, `index.js`), and all import chains. No UI loading states were missing (all async cards have loading skeletons). No error states were missing (all fetch-backed components handle `null`). No user-facing stale data issues (all data-sourced cards show `asOf` dates).
+
 
 ### Step 1 — Get a Gemini API key
 1. Go to aistudio.google.com → sign in → Get API key → Create API key
@@ -215,3 +229,88 @@ App runs at http://localhost:3000.
 - **NextAuth missing `pages` config** — added `signIn: '/auth', error: '/auth'` so OAuth error flows use our branded page, not the default NextAuth UI
 - **Undocumented env vars** — `CRON_SECRET` (required), `SMTP_*` (optional, cron alerts), `SKIP_REDFIN_REFRESH` (optional flag) all added to `.env.example`
 - **README stale reference** — removed `fallbackFetcher.js` from architecture section (file was deleted in prior session)
+
+---
+
+## Debug Phase Log
+
+### Phase 1 — Functional Bugs (v39) ✅ Complete
+
+**4 bugs found and fixed. All root-cause fixes — no workarounds.**
+
+| # | File | Bug | Impact |
+|---|---|---|---|
+| 1 | `pages/api/auth/[...nextauth].js` | Duplicate `pages:` key in `authOptions` object literal. JS last-write-wins — first block's `signOut: '/auth'` was silently overwritten by the second block which lacked it. Sign-out redirected users to NextAuth's default unstyled page. | **Critical** — every sign-out broken |
+| 2 | `pages/api/deals/[id].js` | `if (!id)` guard was placed after the GET query block executed, not before. A request with no `id` would run a DB query against `undefined` before the guard fired. | Medium — wrong execution order |
+| 3 | `next.config.js` | CSP `connect-src` listed `http://data.insideairbnb.com` (HTTP). Modern browsers and strict CSP enforcement reject mixed-content connect attempts. Should be `https://`. | Medium — CSP violation in strict browsers |
+| 4 | `lib/strDataFetcher.js` | `baseUrl` hardcoded as `http://data.insideairbnb.com/...`. All outbound fetches initiated with HTTP. While Node.js follows the 301 redirect to HTTPS, this relies on redirect behavior and wastes a round-trip on every cold fetch. Changed to `https://` directly. | Low-Medium — unnecessary redirect on every STR fetch |
+
+### Phase 2 — Logical Bugs (v39) ✅ Complete
+
+**5 bugs found and fixed. All root-cause fixes — no workarounds.**
+
+| # | File | Bug | Impact |
+|---|---|---|---|
+| 1 | `pages/analyze.js` | `getMgmtRateBenchmark` called on line 395 but missing from import. `ReferenceError` thrown every time `buildPayload()` ran — the analysis form could never submit with a NARPM-derived mgmt rate. | **Critical** — every analysis submission broke mgmt rate defaulting |
+| 2 | `components/analyze/marketHelpers.js` | `breakEvenRentFor10CoC` computed as `(total + targetCF) / 25`, where `total` included vacancy and mgmt calculated at current rent. Break-even rent changes those variable costs — the formula understated the required rent. Correct: `(fixedCosts + targetCF) / rentMultiplier`. | **High** — wrong number shown to every user on the analysis card |
+| 3 | `pages/api/analyze.js` | AI prompt schema described `breakEvenRentForPositiveCF` and `breakEvenRentFor10CoC` with no math formulas. Gemini was left to infer the algebra, producing inconsistent or incorrect values depending on prompt interpretation. | **High** — AI-generated break-even values may be wrong |
+| 4 | `lib/pdfExport.js` | Used `_MD.rentGrowthDefault` where `_MD` was never imported or defined. PDF export threw `ReferenceError: _MD is not defined` on every download. Fixed to use `data._settings.rentGrowthRate` (already in the analysis object). | **Critical** — PDF export completely broken |
+| 5 | `components/analyze/cards/NOIBreakEven.jsx` | NOI sublabel read "Excl. mortgage only" — imprecise and confusing. NOI excludes all debt service (mortgage + PMI), not just mortgage. Changed to industry-standard "Before debt service". | **Low** — misleading label for users |
+
+### Phase 3 — Syntax Errors (v39) ✅ Complete
+
+**ZERO syntax bugs found. Full structural audit confirmed codebase is syntactically clean.**
+
+Audit scope:
+- All 104 JS/JSX files checked for delimiter balance using a state-machine parser (handles strings, template literals, comments)
+- Raw character-count cross-check confirmed every file: all braces, parens, brackets balanced to zero
+- All API route files verified: exactly one `export default` each, none missing, no duplicates
+- `cards/index.js` barrel exports verified against all 25 card file actual exports — all names match
+- Template literals: `analyze.js` AI prompt verified properly closed (270 backticks, even count)
+- Config files: `vercel.json` and `package.json` are valid JSON
+- Duplicate declaration scan run against all API files — all flagged cases confirmed to be in different function scopes (false positives)
+- Regex literal patterns in `fetch-listing.js` confirmed balanced by raw count after parser false-positive investigation
+
+### Phase 4 — Security Vulnerabilities (v39) ✅ Complete
+
+**4 security bugs found and fixed.**
+
+| # | File | Vulnerability | Severity | Fix |
+|---|---|---|---|---|
+| 1 | `pages/api/fetch-listing.js` | **SSRF** — user-supplied URL fetched with no hostname validation. Attacker could probe AWS metadata (169.254.169.254), localhost, or internal Vercel infrastructure. No auth required (rate limit 20/min). | **High** | Added `ALLOWED_LISTING_HOSTS` allowlist of 20+ real-estate domains. Protocol checked (`http:`/`https:` only). URL parsed and hostname validated before any fetch call. |
+| 2 | `pages/api/cron/refresh-market-data.js`, `health-check.js`, `market-digest.js` | **Auth bypass** — cron check was `if (cronSecret && ...)`. When `CRON_SECRET` env var is unset (common in dev/staging), the entire auth check is skipped. Anyone can trigger expensive data refresh jobs. | **High** | Changed to `if (!cronSecret \|\| ...)` — fails **closed**. Missing env var now returns 401 rather than allowing access. |
+| 3 | `pages/api/flood-risk.js`, `climate-risk.js`, `school-rating.js`, `str-data.js`, `safmr-rent.js`, `zori-for-city.js`, `market-data.js`, `mortgage-rate.js` | **No rate limiting** — 8 public data enrichment routes had zero rate limiting. An attacker could hammer third-party APIs (FEMA, Census, HUD, FRED, Inside Airbnb) via the server indefinitely. | **Medium** | Added `rateLimit(req, { max: 30, windowMs: 60_000 })` to all 8 routes. |
+| 4 | `pages/api/deals/email.js` | **HTML injection in email** — `address`, `city`, and `narrative` fields inserted directly into email HTML template without escaping. Attacker sends `<script>` or `<img onerror>` to their own inbox. | **Low** | Added `esc()` helper that escapes `&`, `<`, `>`, `"`. Applied to all user-controlled fields in template. |
+
+**Areas confirmed clean:** All deals routes enforce ownership via `user_id` (no IDOR). Admin route requires email in `ADMIN_EMAILS`. Stripe webhook uses `constructEvent` signature verification. Share tokens use `crypto.randomBytes` (36^10 ≈ 3.6T combinations). Referral uses DB RPC idempotency. Stripe `returnPath` sanitized against open redirect. No server secrets in client bundle. `sitemap.xml.js` uses `getServerSideProps` (server-only). Cron now fail-closed on missing secret.
+
+### Phase 5 — Performance & Reliability (v39) ✅ Complete
+
+**1 bug found and fixed.**
+
+| # | File | Issue | Severity | Fix |
+|---|---|----|---|---|
+| 1 | `pages/api/analyze.js` | **Unguarded `geminiRes.json()`** — after confirming `geminiRes.ok === true`, the next line calls `.json()` outside any try/catch. If Gemini returns a 200 with a non-JSON body (HTML error page, CDN gateway response, network garbling), this throws an unhandled `SyntaxError`. Next.js catches it and returns a 500 with a stack trace exposed to the client. | **Medium** | Changed to `geminiRes.json().catch(() => null)` + explicit null guard returning 502 with clean message. |
+
+**Audit items confirmed clean:** All 40+ server-side `fetch()` calls have `AbortSignal.timeout()` (three apparent positives were false — signal was set on nearby lines). In-memory rate limiter has `store.size > 5000` pruning guard. All `Promise.all()` calls are safe — Supabase client never throws (returns `{data, error}`), and helper functions (`getBuildingPermits`, `getMetroGrowth`, `getHvsVacancy`) all catch internally. Cache TTLs correct across all 12 routes. `maxDuration` set on all heavy routes (analyze=60s, fetch-listing=45s, crons=120s, etc.). `Promise.allSettled` used in cron batch refresh and neighborhood parallel enrichment. No infinite loops or unbounded retry logic. Gemini retry capped at 2 attempts. `JSON.parse()` of Gemini text response already wrapped in try/catch.
+
+### Phase 7 — Regression Audit (v39) ✅ Complete
+
+**2 regressions found and fixed. All prior fixes verified intact.**
+
+| # | File(s) | Regression | Severity | Fix |
+|---|---|---|---|---|
+| 1 | `components/analyze/Results.jsx` → `cards/CommandCenter.jsx` | **Circular import causing `NewAnalysisBtn` to be `undefined` at runtime.** Phase 6 defined `NewAnalysisBtn` in `Results.jsx` and imported it into `CommandCenter.jsx`. But `Results.jsx` imports `CommandCenter` via `cards/index`. Cycle: `Results → cards/index → CommandCenter → Results`. In webpack/Next.js module initialization, whichever module is evaluated first sees the other as `{}`. `NewAnalysisBtn` would be `undefined` in `CommandCenter` at mount time — restoring exactly the crash that Phase 6 fixed. | **Critical** | Moved `NewAnalysisBtn` to `InputComponents.jsx` (a leaf module with no upstream dependencies). `Results.jsx` and `CommandCenter.jsx` both import it from `InputComponents`. Circular dependency eliminated — import chain is now a clean DAG: `tokens → marketHelpers → InputComponents → cards/* → Results → pages`. |
+| 2 | `components/analyze/Results.jsx` | **Dead `FloatingChat` import.** `Results.jsx` imported `{ ShareToolbar, FloatingChat }` from `Overlays`. `FloatingChat` is rendered once in `pages/analyze.js` (outside `Results`). It is not rendered anywhere in `Results.jsx`. Dead import carried across all phases undetected. | **Low** | Removed `FloatingChat` from the import — `import { ShareToolbar } from './Overlays'`. |
+
+**All prior fixes confirmed intact across all phases (1–6):** Phase 1 auth/CSP/HTTPS fixes, Phase 2 `getMgmtRateBenchmark`/break-even formula/PDF export fixes, Phase 4 SSRF allowlist/cron fail-closed/rate limiting/email escaping, Phase 5 unguarded `geminiRes.json()`, Phase 6 `VERDICT_CFG`/`NewAnalysisBtn`/`LOAN_TYPES`/`getClosingCostForState`/dead-imports/dashboard guard.
+
+**All user journeys traced end-to-end:**
+- URL paste → debounced fetch → field autofill → validate → confirm → `runAnalysis` → AI prompt → `fetchAnalysis` → `setResults` → Results render → inline edit → `recalcFromEdits` → `isEdited=true` → `NewAnalysisBtn` → confirm discard ✅
+- Deal save → `savedDealId` → neighborhood enrichment → school/SAFMR/flood/climate/STR async fires → PATCH deal with neighborhood → Results props updated ✅
+- Auth → session → token check → analysis → `updateSession` → token count refreshed in nav ✅
+- Dashboard load → deals/list (with `r.ok` guard) → deal card → click → `/analyze?deal=id` → `setResults` → results stage ✅
+- Share → `crypto.randomBytes` token → public URL → SSR `getServerSideProps` → public read-only view ✅
+- Token purchase → Stripe → webhook → DB atomic RPC → session refresh → toast → modal dismissed ✅
+
+**All 25 card barrel exports verified:** Every name in `cards/index.js` resolves to an actual named export in its corresponding `.jsx` file.

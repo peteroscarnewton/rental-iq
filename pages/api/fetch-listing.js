@@ -1,20 +1,51 @@
-import { rateLimitWithAuth } from "../../lib/rateLimit.js";
-// /api/fetch-listing
-// Strategy:
-//   1. Extract full street address from the listing URL slug (free, instant)
-//   2. In parallel, fetch 3 syndicated listing sites that carry MLS data without blocking
-//   3. Merge with confidence-aware logic:
-//        - Each value tagged by source tier: jsonld > structured > regex
-//        - Per-field sanity bounds applied before any value is accepted
-//        - Confidence: 'high'   = 2+ sources agree within tolerance
-//                      'medium' = 1 high-tier (jsonld/structured) source
-//                      'low'    = 1 regex-only source (amber badge, "verify")
-//        - taxAnnual / hoaMonthly: never accepted from regex — structured only
-//   4. Fall back to directly fetching the original URL if syndicated sites have gaps
+import { rateLimitWithAuth }   from '../../lib/rateLimit.js';
+import { fetchSafmrRent }      from '../../lib/marketBenchmarkFetcher.js';
+import { getSupabaseAdmin }    from '../../lib/supabase.js';
+import { fetchListingViaAI }   from '../../lib/aiListingFetcher.js';
+import crypto                  from 'crypto';
+
+// /api/fetch-listing  —  v36
 //
-// Returns: { price, rent, beds, baths, sqft, year, city, taxAnnual, hoaMonthly,
-//            populated, failed, confidence: {field: 'high'|'medium'|'low'},
-//            blocked, warning }
+// ═══════════════════════════════════════════════════════════════════════════
+// ARCHITECTURE: AI-FIRST LISTING EXTRACTION
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Layer 0 — URL address extraction          (free, instant, no network call)
+//           Parses address from Zillow/Redfin/Realtor/Homes/Trulia slugs.
+//
+// Layer 1 — Supabase listing cache          (free, 7-day TTL per unique URL)
+//           Same URL pasted by 1000 users = 1 AI call, 999 cache hits.
+//           This is what makes the AI approach economical at scale.
+//
+// Layer 2 — Gemini 2.5 Flash + Google Search grounding  (PRIMARY)
+//           ─────────────────────────────────────────────────────
+//           Gemini searches Google for the listing the same way a human
+//           researcher would. Returns ALL fields including year_built,
+//           taxAnnual, hoaMonthly — fields og:meta never carries.
+//           No IP blocking. No bot detection. No proxy needed.
+//           Cost: ~$0.0035/unique URL. Free tier: 1,500 grounded queries/day.
+//           With 7-day cache, effective cost at scale is fractions of a cent.
+//
+// Layer 2b — og:meta + JSON-LD fallback     (fills AI gaps, very new listings)
+//            Fast <head> fetch with social bot UA. Gets price/beds/baths/sqft
+//            reliably. Covers brand-new listings not yet indexed by Google.
+//
+// Layer 3 — OSM Nominatim zip fill          (free, no API key)
+//
+// Layer 4 — HUD SAFMR rent estimate         (free, official gov API)
+//
+
+// ── Constants (defined before handler — const is not hoisted) ────────────────
+const FACEBOOKBOT_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
+const TWITTERBOT_UA  = 'Twitterbot/1.0';
+const LINKEDINBOT_UA = 'LinkedInBot/1.0 (compatible; Mozilla/5.0)';
+const SOCIAL_UAS     = [FACEBOOKBOT_UA, TWITTERBOT_UA, LINKEDINBOT_UA];
+let _uaIdx = 0;
+function nextSocialUA() { return SOCIAL_UAS[(_uaIdx++) % SOCIAL_UAS.length]; }
+
+const CORE_FIELDS    = ['price', 'beds', 'baths', 'sqft', 'year', 'city'];
+const ALL_FIELDS     = ['price', 'rent', 'beds', 'baths', 'sqft', 'year', 'city', 'taxAnnual', 'hoaMonthly'];
+const NUMERIC_FIELDS = ['price', 'rent', 'beds', 'baths', 'sqft', 'year', 'taxAnnual', 'hoaMonthly'];
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
@@ -26,73 +57,216 @@ export default async function handler(req, res) {
   const { url } = req.body;
   if (!url || typeof url !== 'string') return res.status(400).json({ error: 'url required' });
 
-  // ── Step 1: Extract address from URL slug ─────────────────────────────────
-  const address = extractAddressFromUrl(url);
-
-  // ── Step 2: Fetch syndicated sites in parallel if we got an address ───────
-  let result    = emptyResult();
-  let confMap   = {};  // { field: 'high' | 'medium' | 'low' }
-
-  if (address) {
-    result.city = `${address.city}, ${address.state}`;
-    confMap.city = 'high'; // parsed from URL slug — always trustworthy
-    const candidates = await fetchSyndicatedSites(address);
-    mergeWithConfidence(result, confMap, candidates);
+  // ── SSRF protection: only allow known real-estate listing hostnames ────────
+  // Prevents attackers from using this endpoint to probe internal infrastructure
+  // (AWS metadata, internal services, localhost, etc.)
+  const ALLOWED_LISTING_HOSTS = new Set([
+    'www.zillow.com', 'zillow.com', 'www.redfin.com', 'redfin.com',
+    'www.realtor.com', 'realtor.com', 'www.trulia.com', 'trulia.com',
+    'www.homes.com', 'homes.com', 'www.movoto.com', 'movoto.com',
+    'www.coldwellbanker.com', 'coldwellbanker.com',
+    'www.century21.com', 'century21.com', 'www.remax.com', 'remax.com',
+    'www.kw.com', 'kw.com', 'www.compass.com', 'compass.com',
+    'www.bhhs.com', 'bhhs.com', 'www.sothebysrealty.com', 'sothebysrealty.com',
+    'www.loopnet.com', 'loopnet.com', 'www.crexi.com', 'crexi.com',
+    'www.apartments.com', 'apartments.com', 'www.rentals.com', 'rentals.com',
+    'www.rent.com', 'rent.com', 'www.zumper.com', 'zumper.com',
+    'www.estately.com', 'estately.com', 'www.point2homes.com', 'point2homes.com',
+    'www.mlslistings.com', 'mlslistings.com',
+  ]);
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return res.status(400).json({ error: 'Only http/https URLs are accepted.' });
+    }
+    if (!ALLOWED_LISTING_HOSTS.has(parsed.hostname)) {
+      return res.status(400).json({ error: 'Unsupported listing source. Paste a URL from Zillow, Redfin, Realtor.com, or another supported site.' });
+    }
+  } catch (_) {
+    return res.status(400).json({ error: 'Invalid URL.' });
   }
 
-  // ── Step 3: Fill gaps via direct URL fetch ────────────────────────────────
-  // Always check ALL_FIELDS for gaps — not just CORE_FIELDS.
-  // Critically: taxAnnual and hoaMonthly are never returned by syndicated parsers
-  // (Highrises, Homes.com, Point2 don't carry tax/HOA data), so without this
-  // always-run check those fields would only ever come back null.
-  const stillMissing = ALL_FIELDS.filter(f => result[f] === null || result[f] === undefined);
-  if (stillMissing.length > 0) {
-    const { result: directResult, confMap: directConf } = await fetchDirectUrl(url);
-    for (const f of stillMissing) {
-      if (directResult[f] !== null && directResult[f] !== undefined) {
-        result[f]  = directResult[f];
-        confMap[f] = directConf[f] || 'medium';
+  // ── Layer 0: Resolve redirects + extract address from slug ────────────────
+  let resolvedUrl = url;
+  try {
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 4000);
+    const r = await fetch(url, {
+      method: 'HEAD',
+      headers: { 'User-Agent': FACEBOOKBOT_UA },
+      signal: ctrl.signal,
+      redirect: 'follow',
+    });
+    resolvedUrl = r.url || url;
+    // Re-validate post-redirect hostname to prevent SSRF via open redirects
+    // on allowlisted domains (e.g. zillow.com redirect to 169.254.169.254).
+    try {
+      const rParsed = new URL(resolvedUrl);
+      if (!ALLOWED_LISTING_HOSTS.has(rParsed.hostname)) resolvedUrl = url;
+    } catch (_) { resolvedUrl = url; }
+  } catch (_) {}
+
+  const address = extractAddressFromUrl(resolvedUrl) || extractAddressFromUrl(url);
+
+  // ── Layer 1: Supabase cache lookup ────────────────────────────────────────
+  const cacheKey = 'listing:' + crypto.createHash('sha256')
+    .update(normalizeUrl(resolvedUrl)).digest('hex').slice(0, 32);
+
+  let supabase = null;
+  try {
+    supabase = getSupabaseAdmin();
+    const { data: cached } = await supabase
+      .from('market_data_cache')
+      .select('value, fetched_at')
+      .eq('key', cacheKey)
+      .single();
+
+    if (cached?.value) {
+      const age       = Date.now() - new Date(cached.fetched_at).getTime();
+      const TTL_7DAYS = 7 * 24 * 60 * 60 * 1000;
+      if (age < TTL_7DAYS) {
+        const parsed = JSON.parse(cached.value);
+        if (address && !parsed.city) parsed.city = `${address.city}, ${address.state}`;
+        return res.status(200).json({ ...parsed, _source: 'cache' });
       }
     }
+  } catch (_) {}
+
+  // ── Set up result object ───────────────────────────────────────────────────
+  let result  = emptyResult();
+  let confMap = {};
+
+  if (address) {
+    result.city  = `${address.city}, ${address.state}`;
+    confMap.city = 'high';
   }
 
-  // ── Tally & respond ────────────────────────────────────────────────────────
-  const populated = ALL_FIELDS.filter(f => result[f] !== null && result[f] !== undefined);
-  const failed    = ALL_FIELDS.filter(f => result[f] === null || result[f] === undefined);
+  // ── Layer 2: AI extraction (Gemini + Google Search grounding) ───────────────
+  //
+  // Primary path: ask Gemini to find the listing via Google Search and return
+  // structured JSON. Gets ALL fields including year_built, taxAnnual, hoaMonthly
+  // which og:meta never carries. Gemini searches Google the way a human would —
+  // no IP blocking, no bot detection.
+  //
+  // Fallback: og:meta fills any gaps AI left null, and covers cases where
+  // Gemini can't find the listing (very new listings, private URLs, etc).
 
-  // Stringify all numeric fields for form inputs
+  let aiSucceeded = false;
+
+  try {
+    const aiData = await withTimeout(fetchListingViaAI(resolvedUrl), 16_000, null);
+
+    if (aiData) {
+      aiSucceeded = true;
+
+      // Map AI result directly into result + confMap
+      // AI results get 'high' confidence — Gemini found them via real search
+      const AI_FIELDS = ['price', 'rent', 'beds', 'baths', 'sqft', 'year', 'taxAnnual', 'hoaMonthly'];
+      for (const f of AI_FIELDS) {
+        if (aiData[f] != null) {
+          result[f]  = aiData[f];
+          confMap[f] = 'high';
+        }
+      }
+      if (aiData.city && !result.city) {
+        result.city  = aiData.city;
+        confMap.city = 'high';
+      }
+    }
+  } catch (_) {
+    // AI call failed — og:meta fallback below will handle it
+  }
+
+  // ── Layer 2b: og:meta fallback — fills any fields AI left null ────────────
+  // Also serves as full fallback if AI call failed entirely.
+  // og:meta reliably gets price/beds/baths/sqft/city even when AI can't find
+  // the listing (e.g. brand-new listing not yet indexed).
+  try {
+    const ogResult = await fetchOgMeta(resolvedUrl);
+    if (ogResult) resolveAllFields(result, confMap, [ogResult]);
+
+    // If still missing price, try mobile variant
+    if (result.price == null) {
+      const mobileUrl = toMobileUrl(resolvedUrl);
+      if (mobileUrl) {
+        const mobileResult = await fetchOgMeta(mobileUrl);
+        if (mobileResult) resolveAllFields(result, confMap, [mobileResult]);
+      }
+    }
+  } catch (_) {}
+
+  // ── Layer 3: OSM Nominatim zip fill ────────────────────────────────────────
+  if (address && !address.zipcode) {
+    try {
+      const q    = `${address.street}, ${address.city}, ${address.state}`;
+      const osmR = await withTimeout(
+        fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&addressdetails=1`, {
+          headers: { 'User-Agent': 'RentalIQ/1.0 (rentaliq.com — property analysis)' },
+        }).then(r => r.ok ? r.json() : null),
+        3000, null
+      );
+      if (osmR?.[0]?.address?.postcode) {
+        address.zipcode = osmR[0].address.postcode.replace(/\D/g, '').slice(0, 5);
+      }
+    } catch (_) {}
+  }
+
+  // ── Layer 4: HUD SAFMR rent estimate ──────────────────────────────────────
+  if (result.rent == null && address?.zipcode) {
+    try {
+      const bedsForHud = result.beds != null ? Math.round(Number(result.beds)) : 2;
+      const safmr = await withTimeout(fetchSafmrRent(address.zipcode, bedsForHud), 5000, null);
+      if (safmr?.rent) {
+        result.rent  = safmr.rent;
+        confMap.rent = 'low'; // HUD FMR is a market proxy, not actual rent — amber badge
+      }
+    } catch (_) {}
+  }
+
+  // ── Normalize + finalize ───────────────────────────────────────────────────
   for (const f of NUMERIC_FIELDS) {
-    if (result[f] !== null && result[f] !== undefined) result[f] = String(result[f]);
+    if (result[f] != null) result[f] = String(result[f]);
   }
+
+  const populated = ALL_FIELDS.filter(f => result[f] != null);
+  const failed    = ALL_FIELDS.filter(f => result[f] == null);
 
   let warning = null;
   if (populated.length === 0) {
-    warning = 'Could not extract data from this listing. Please enter details manually.';
-  } else if (failed.includes('price')) {
+    warning = 'Could not read this listing automatically. Please enter details manually.';
+  } else if (result.price == null) {
     warning = 'Got some details but price is missing — please fill it in.';
-  } else if (populated.length < 3) {
-    warning = `Got ${populated.length} field${populated.length !== 1 ? 's' : ''} — fill in the rest manually.`;
+  } else if (populated.length < 4) {
+    warning = `Filled ${populated.length} field${populated.length > 1 ? 's' : ''} — please complete the rest.`;
   }
 
-  return res.status(200).json({ ...result, populated, failed, confidence: confMap, blocked: false, warning });
+  const payload = { ...result, populated, failed, confidence: confMap, blocked: false, warning, _aiUsed: aiSucceeded };
+
+  // ── Write to cache (fire-and-forget, don't block response) ────────────────
+  if (supabase && populated.length >= 3) {
+    supabase.from('market_data_cache').upsert(
+      { key: cacheKey, value: JSON.stringify(payload), fetched_at: new Date().toISOString(), valid_until: new Date(Date.now() + 7*24*60*60*1000).toISOString() },
+      { onConflict: 'key' }
+    ).then(() => {}).catch(() => {});
+  }
+
+  return res.status(200).json(payload);
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-const CORE_FIELDS    = ['price', 'beds', 'baths', 'sqft', 'year', 'city'];
-const ALL_FIELDS     = ['price', 'rent', 'beds', 'baths', 'sqft', 'year', 'city', 'taxAnnual', 'hoaMonthly'];
-const NUMERIC_FIELDS = ['price', 'rent', 'beds', 'baths', 'sqft', 'year', 'taxAnnual', 'hoaMonthly'];
+// ══════════════════════════════════════════════════════════════════════════════
+// HELPERS + FIELD RULES
+// ══════════════════════════════════════════════════════════════════════════════
 
-// Per-field rules: sanity bounds + whether regex is acceptable as a source
 const FIELD_RULES = {
-  price:      { min: 10_000,                    max: 50_000_000, allowRegex: true,  tolerance: 0.05 },
-  beds:       { min: 0,                         max: 20,         allowRegex: true,  tolerance: 0,    exact: true },
-  baths:      { min: 0,                         max: 20,         allowRegex: true,  tolerance: 0.25, exact: false },
-  sqft:       { min: 100,                       max: 30_000,     allowRegex: true,  tolerance: 0.10 },
-  year:       { min: 1800, max: new Date().getFullYear() + 1,    allowRegex: false, tolerance: 0,    exact: true },
-  city:       { allowRegex: true,  tolerance: 0 },
-  rent:       { min: 100,                       max: 50_000,     allowRegex: true,  tolerance: 0.10 },
-  taxAnnual:  { min: 0,                         max: 200_000,    allowRegex: false, tolerance: 0.15 },
-  hoaMonthly: { min: 0,                         max: 10_000,     allowRegex: false, tolerance: 0.15 },
+  price:      { min: 10_000,  max: 50_000_000, allowRegex: true,  tolerance: 0.05 },
+  beds:       { min: 0,       max: 20,         allowRegex: true,  tolerance: 0,   exact: true },
+  baths:      { min: 0,       max: 20,         allowRegex: true,  tolerance: 0.25 },
+  sqft:       { min: 100,     max: 30_000,     allowRegex: true,  tolerance: 0.10 },
+  year:       { min: 1800,    max: new Date().getFullYear() + 1, allowRegex: false, tolerance: 0, exact: true },
+  city:       { allowRegex: true, tolerance: 0 },
+  rent:       { min: 100,     max: 50_000,     allowRegex: true,  tolerance: 0.10 },
+  taxAnnual:  { min: 0,       max: 200_000,    allowRegex: false, tolerance: 0.15 },
+  hoaMonthly: { min: 0,       max: 10_000,     allowRegex: false, tolerance: 0.15 },
 };
 
 const STREET_SUFFIXES = [
@@ -100,107 +274,425 @@ const STREET_SUFFIXES = [
   'Ln','Lane','Ct','Court','Pl','Place','Way','Cir','Circle','Pkwy','Parkway',
   'Ter','Terrace','Trl','Trail','Hwy','Highway','Fwy','Freeway','Sq','Square',
   'Loop','Run','Pass','Bend','Ridge','Glen','Hill','Bay','Pt','Point',
+  'Xing','Crossing','Aly','Alley','Brk','Brook',
 ];
 
 function emptyResult() {
-  return { price:null, rent:null, beds:null, baths:null, sqft:null, year:null, city:null, taxAnnual:null, hoaMonthly:null };
+  return { price:null, rent:null, beds:null, baths:null, sqft:null, year:null,
+           city:null, taxAnnual:null, hoaMonthly:null };
 }
 
-// ── Confidence-aware merge ────────────────────────────────────────────────────
-// Each candidate is { price, beds, ... } where each field value is either:
-//   a raw number/string, OR a tagged object { value, tier: 'jsonld'|'structured'|'regex' }
-// mergeWithConfidence resolves conflicts and writes into result + confMap.
+const jld  = v => ({ value: v, tier: 'jsonld' });
+const strd = v => ({ value: v, tier: 'structured' });
+const rgx  = v => ({ value: v, tier: 'regex' });
 
-function mergeWithConfidence(result, confMap, candidates) {
-  for (const field of ALL_FIELDS) {
-    if (field === 'city') continue; // already set from URL slug
-    if (result[field] !== null && result[field] !== undefined) continue; // already resolved
+function withTimeout(promise, ms, fallback = null) {
+  return Promise.race([promise, new Promise(r => setTimeout(() => r(fallback), ms))]);
+}
 
-    const rules = FIELD_RULES[field];
-    if (!rules) continue;
+function normalizeUrl(url) {
+  try {
+    const u = new URL(url);
+    return `${u.hostname}${u.pathname}`.toLowerCase().replace(/\/$/, '');
+  } catch (_) { return url.toLowerCase(); }
+}
 
-    // Collect all tagged readings for this field across candidates
-    const readings = [];
-    for (const cand of candidates) {
-      if (!cand) continue;
-      const raw = cand[field];
-      if (raw === null || raw === undefined) continue;
+// ══════════════════════════════════════════════════════════════════════════════
+// LAYER 0: Address extraction from URL slug
+// ══════════════════════════════════════════════════════════════════════════════
 
-      // Candidates may return plain values or tagged objects
-      const tagged = (raw && typeof raw === 'object' && 'value' in raw) ? raw : { value: raw, tier: 'regex' };
-      const { value, tier } = tagged;
+function extractAddressFromUrl(url) {
+  try {
+    const u    = new URL(url);
+    const path = u.pathname;
 
-      // Skip regex readings for fields that don't allow it
-      if (!rules.allowRegex && tier === 'regex') continue;
+    if (url.includes('zillow.com')) {
+      const m = path.match(/\/(?:homedetails(?:\/new-construction)?|b)\/([^/]+)/i);
+      if (m) return parseSlug(m[1].replace(/_\d+_?zpid\/?$/, '').replace(/-\d+_zpid$/, ''));
+    }
 
-      // Apply sanity bounds
-      if (rules.min !== undefined && value < rules.min) continue;
-      if (rules.max !== undefined && value > rules.max) continue;
-
-      // For year: never accept a year that looks like a renovation date
-      // (year must be the most common structural year, not a remodel year)
-      if (field === 'year') {
-        // Extra check: if the value is within the last 10 years, it might be a remodel.
-        // We keep it but only at 'low' confidence unless 2+ sources agree.
-        readings.push({ value, tier, possiblyRemodel: value > (new Date().getFullYear() - 10) });
-      } else {
-        readings.push({ value, tier });
+    if (url.includes('redfin.com')) {
+      const m = path.match(/\/(?:us\/)?([A-Z]{2})\/([^/]+)\/([^/]+)\/(?:home|condo|townhouse|multifamily|land)\//i);
+      if (m) {
+        const state   = m[1].toUpperCase();
+        const city    = m[2].replace(/-/g, ' ');
+        const slug    = m[3];
+        const zipM    = slug.match(/-(\d{5})$/);
+        const street  = slug.replace(/-\d{5}$/, '').replace(/-/g, ' ');
+        return { street: toTitleCase(street), city: toTitleCase(city), state, zipcode: zipM?.[1] || '' };
       }
     }
 
-    if (readings.length === 0) continue;
-
-    // Tier weights: jsonld=3, structured=2, regex=1
-    const tierWeight = { jsonld: 3, structured: 2, regex: 1 };
-
-    // Group readings that agree within tolerance
-    const groups = groupByTolerance(readings, rules.tolerance || 0);
-
-    // Score each group: sum of tier weights
-    let bestGroup = null;
-    let bestScore = -1;
-    for (const group of groups) {
-      const score = group.reduce((s, r) => s + (tierWeight[r.tier] || 1), 0);
-      if (score > bestScore) { bestScore = score; bestGroup = group; }
+    if (url.includes('realtor.com')) {
+      const m = path.match(/\/realestateandhomes-detail\/([^/?]+)/i);
+      if (m) {
+        const clean = m[1].replace(/_M\d+$/, '');
+        const parts = clean.split('_');
+        if (parts.length >= 4 && /^\d{5}$/.test(parts[3]) && /^[A-Z]{2}$/.test(parts[2]))
+          return { street: toTitleCase(parts[0].replace(/-/g, ' ')),
+                   city:   toTitleCase(parts[1].replace(/-/g, ' ')),
+                   state:  parts[2].toUpperCase(), zipcode: parts[3] };
+        return parseSlug(clean.replace(/_/g, '-'));
+      }
     }
 
-    if (!bestGroup || bestGroup.length === 0) continue;
-
-    // Pick the representative value: highest-tier reading in the winning group
-    bestGroup.sort((a, b) => (tierWeight[b.tier] || 1) - (tierWeight[a.tier] || 1));
-    const winner = bestGroup[0];
-
-    // Determine confidence
-    const totalWeight = bestGroup.reduce((s, r) => s + (tierWeight[r.tier] || 1), 0);
-    let conf;
-    if (bestGroup.length >= 2 && totalWeight >= 4) {
-      conf = 'high';   // 2+ sources with at least one jsonld/structured
-    } else if (winner.tier === 'jsonld' || winner.tier === 'structured') {
-      conf = 'medium'; // single trustworthy structured source
-    } else {
-      conf = 'low';    // regex only
+    if (url.includes('homes.com')) {
+      const m = path.match(/\/([a-z]{2})\/([^/]+)\/([^/]+)\//i);
+      if (m) {
+        const state  = m[1].toUpperCase();
+        const city   = m[2].replace(/-/g, ' ');
+        const slug   = m[3];
+        const zipM   = slug.match(/-(\d{5})$/);
+        const street = slug.replace(/-\d{5}$/, '').replace(/-/g, ' ');
+        return { street: toTitleCase(street), city: toTitleCase(city), state, zipcode: zipM?.[1] || '' };
+      }
     }
 
-    // Remodel-year penalty: if all readings look like renovation years, drop to low
-    if (field === 'year' && bestGroup.every(r => r.possiblyRemodel)) {
-      conf = 'low';
+    if (url.includes('trulia.com')) {
+      const m = path.match(/\/(?:homes\/for_sale|property)\/([^/?]+)/i);
+      if (m) return parseSlug(m[1].replace(/_\d+p$/, ''));
     }
 
+    const gm = path.match(/\/([^/]*\d{5}[^/]*)\/?(?:$|\?)/);
+    if (gm) return parseSlug(gm[1]);
+
+    return null;
+  } catch (_) { return null; }
+}
+
+function parseSlug(slug) {
+  if (!slug) return null;
+  const parts  = slug.split(/[-_]+/);
+  const zipIdx = parts.findIndex(p => /^\d{5}$/.test(p));
+
+  if (zipIdx >= 2) {
+    const zipcode  = parts[zipIdx];
+    const state    = parts[zipIdx - 1].toUpperCase();
+    if (!/^[A-Z]{2}$/.test(state)) return null;
+    const preState = parts.slice(0, zipIdx - 1);
+    let si = -1;
+    for (let i = preState.length - 1; i >= 0; i--) {
+      if (STREET_SUFFIXES.some(s => s.toLowerCase() === preState[i].toLowerCase())) { si = i; break; }
+    }
+    if (si < 0) si = Math.min(4, preState.length - 2);
+    const street = toTitleCase(preState.slice(0, si + 1).join(' '));
+    const city   = toTitleCase(preState.slice(si + 1).join(' '));
+    if (!street || !city || city.length < 2) return null;
+    return { street, city, state, zipcode };
+  }
+
+  // No zip — state-only fallback
+  const si2 = parts.findIndex((p, i) => i > 0 && /^[A-Z]{2}$/i.test(p) && i === parts.length - 1);
+  if (si2 > 1) {
+    const state    = parts[si2].toUpperCase();
+    const preState = parts.slice(0, si2);
+    let si = -1;
+    for (let i = preState.length - 1; i >= 0; i--) {
+      if (STREET_SUFFIXES.some(s => s.toLowerCase() === preState[i].toLowerCase())) { si = i; break; }
+    }
+    if (si < 0) si = Math.min(4, preState.length - 2);
+    const street = toTitleCase(preState.slice(0, si + 1).join(' '));
+    const city   = toTitleCase(preState.slice(si + 1).join(' '));
+    if (!street || !city || city.length < 2) return null;
+    return { street, city, state, zipcode: '' };
+  }
+
+  return null;
+}
+
+function toTitleCase(s) { return s.replace(/\b\w/g, c => c.toUpperCase()); }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LAYER 2: og:meta + JSON-LD from listing URL
+// ══════════════════════════════════════════════════════════════════════════════
+
+async function fetchOgMeta(url) {
+  if (!url) return null;
+
+  try {
+    const ctrl    = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 7000);
+    let   html    = '';
+
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': nextSocialUA(),
+          'Accept':     'text/html,application/xhtml+xml',
+        },
+        signal:   ctrl.signal,
+        redirect: 'follow',
+      });
+
+      if (!res.ok) return null;
+
+      // Stream-read only the <head> — abort once we see <body to save bandwidth
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (html.length < 15_000) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        html += decoder.decode(value, { stream: true });
+        if (html.includes('</head>') || html.toLowerCase().includes('<body')) break;
+      }
+      reader.cancel().catch(() => {});
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!html || html.length < 200) return null;
+    return parseHead(html);
+  } catch (_) { return null; }
+}
+
+function parseHead(html) {
+  const r = emptyResult();
+
+  // ── JSON-LD structured data (highest quality) ─────────────────────────────
+  // All three sites include schema.org/SingleFamilyResidence or /Apartment JSON-LD
+  // in <head> for Google rich snippets — this is their best structured data
+  for (const m of html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      const ld    = JSON.parse(m[1]);
+      const items = Array.isArray(ld) ? ld : [ld];
+      for (const item of items) {
+        if (!item) continue;
+        if (item?.offers?.price && !r.price)
+          r.price = jld(parseInt(String(item.offers.price).replace(/\D/g, '')));
+        if (item?.numberOfBedrooms && !r.beds)
+          r.beds = jld(parseFloat(item.numberOfBedrooms));
+        if (item?.numberOfBathroomsTotal && !r.baths)
+          r.baths = jld(parseFloat(item.numberOfBathroomsTotal));
+        if (!r.baths && item?.numberOfBathrooms)
+          r.baths = jld(parseFloat(item.numberOfBathrooms));
+        if (item?.floorSize?.value && !r.sqft)
+          r.sqft = jld(parseInt(item.floorSize.value));
+        if (item?.yearBuilt && !r.year)
+          r.year = jld(parseInt(item.yearBuilt));
+        if (item?.address?.addressLocality && item?.address?.addressRegion && !r.city)
+          r.city = jld(`${item.address.addressLocality}, ${item.address.addressRegion}`);
+        if (item?.address?.postalCode && !item?.address?.postalCode?.includes('{'))
+          r._zipcode = item.address.postalCode?.replace(/\D/g, '').slice(0, 5);
+      }
+    } catch (_) {}
+  }
+
+  // ── og:description — the richest og tag ───────────────────────────────────
+  // Zillow:   "3 bds · 2 ba · 1,432 sqft house. Listed for $285,000."
+  // Redfin:   "1,432 sq ft house with 3 beds and 2 baths. Listed at $285,000."
+  // Realtor:  "3 bedrooms, 2 bathrooms, 1,432 sq ft. List price $285,000."
+  const desc = getMetaContent(html, ['og:description', 'twitter:description', 'description']);
+  if (desc) {
+    if (!r.price) {
+      const v = regexPriceVal(desc, /(?:listed?\s*(?:for|at)|list(?:ing)?\s*price|asking)[^$]{0,30}\$([0-9,]+)/i)
+             || regexPriceVal(desc, /\$([0-9,]+)/);
+      if (v) r.price = strd(v);
+    }
+    // "3 bds · 2 ba" or "3 bedrooms and 2 bathrooms"
+    if (!r.beds || !r.baths) {
+      const bb = desc.match(/(\d+)\s*(?:bd|bed(?:room)?s?)\s*[·•|,\s]\s*(\d+(?:\.\d+)?)\s*(?:ba(?:th)?(?:s|room)?)/i);
+      if (bb) {
+        if (!r.beds)  r.beds  = strd(parseFloat(bb[1]));
+        if (!r.baths) r.baths = strd(parseFloat(bb[2]));
+      }
+    }
+    if (!r.beds) {
+      const v = regexFloatVal(desc, /(\d+)\s*(?:bd|bed(?:room)?s?)(?:\s|·|•|,|$)/i);
+      if (v !== null && v >= 0 && v <= 20) r.beds = strd(v);
+    }
+    if (!r.baths) {
+      const v = regexFloatVal(desc, /(\d+(?:\.\d+)?)\s*(?:ba(?:th)?(?:s|room)?)(?:\s|·|•|,|$)/i);
+      if (v !== null && v >= 0 && v <= 20) r.baths = strd(v);
+    }
+    if (!r.sqft) {
+      const v = regexIntVal(desc, /([0-9,]+)\s*sq(?:\.?\s*ft|uare\s*f)/i);
+      if (v && v >= 100 && v <= 30_000) r.sqft = strd(v);
+    }
+    if (!r.year) {
+      const v = regexIntVal(desc, /(?:built|year\s*built|built\s*in)[^\d]{0,10}(\d{4})/i);
+      if (v && v >= 1800 && v <= new Date().getFullYear()) r.year = strd(v);
+    }
+    if (!r.hoaMonthly) {
+      const v = regexIntVal(desc, /hoa[^$]{0,15}\$([0-9,]+)\/mo/i)
+             || regexIntVal(desc, /\$([0-9,]+)\/mo\s*hoa/i);
+      if (v && v >= 0 && v <= 10_000) r.hoaMonthly = strd(v);
+    }
+  }
+
+  // ── og:title — beds/baths/price last resort ───────────────────────────────
+  const title = getMetaContent(html, ['og:title', 'twitter:title']);
+  if (title) {
+    if (!r.beds) {
+      const v = regexFloatVal(title, /(\d+)\s*(?:bd|bed(?:s)?|BR)(?:\s|,|·|$)/i);
+      if (v !== null && v >= 0 && v <= 20) r.beds = rgx(v);
+    }
+    if (!r.baths) {
+      const v = regexFloatVal(title, /(\d+(?:\.\d+)?)\s*(?:ba(?:th)?(?:s)?|BA)(?:\s|,|·|$)/i);
+      if (v !== null && v >= 0 && v <= 20) r.baths = rgx(v);
+    }
+    if (!r.price) {
+      const v = regexPriceVal(title, /\$([0-9,]+)/);
+      if (v) r.price = rgx(v);
+    }
+    if (!r.city) {
+      const cm = title.match(/,\s*([A-Za-z][\w\s]+?),\s*([A-Z]{2})(?:\s+\d{5})?(?:\s*[-|]|$)/);
+      if (cm) r.city = strd(`${cm[1].trim()}, ${cm[2]}`);
+    }
+  }
+
+  if (!hasAnyValue(r)) return null;
+  return r;
+}
+
+function getMetaContent(html, names) {
+  for (const name of names) {
+    for (const pat of [
+      new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]+content=["']([^"']{5,800})["']`, 'i'),
+      new RegExp(`<meta[^>]+content=["']([^"']{5,800})["'][^>]+(?:property|name)=["']${name}["']`, 'i'),
+    ]) {
+      const m = html.match(pat);
+      if (m?.[1]) return htmlDecode(m[1]);
+    }
+  }
+  return null;
+}
+
+function htmlDecode(s) {
+  return s
+    .replace(/&amp;/g,  '&').replace(/&lt;/g,   '<').replace(/&gt;/g,  '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g,  "'").replace(/&nbsp;/g, ' ')
+    .replace(/&#x27;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n));
+}
+
+function toMobileUrl(url) {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'www.zillow.com')  return url.replace('www.zillow.com',  'm.zillow.com');
+    if (u.hostname === 'www.redfin.com')  return url.replace('www.redfin.com',  'm.redfin.com');
+  } catch (_) {}
+  return null;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CONFLICT RESOLUTION (unchanged — same multi-source logic)
+// ══════════════════════════════════════════════════════════════════════════════
+
+const TIER_WEIGHT = { jsonld: 3, structured: 2, regex: 1 };
+
+function resolveAllFields(result, confMap, candidates) {
+  for (const field of ALL_FIELDS) {
+    if (field === 'city') continue;
+    if (result[field] != null) continue;
+    const rules = FIELD_RULES[field];
+    if (!rules) continue;
+
+    const seen = new Set(), readings = [];
+    for (const cand of candidates) {
+      if (!cand) continue;
+      const raw    = cand[field];
+      if (raw == null) continue;
+      const tagged = (raw && typeof raw === 'object' && 'value' in raw) ? raw : { value: raw, tier: 'regex' };
+      const { value, tier } = tagged;
+      if (!rules.allowRegex && tier === 'regex') continue;
+      if (rules.min !== undefined && value < rules.min) continue;
+      if (rules.max !== undefined && value > rules.max) continue;
+      const key = `${tier}:${value}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      readings.push({ value, tier, ...(field === 'year' ? { possiblyRemodel: value > (new Date().getFullYear() - 10) } : {}) });
+    }
+
+    if (!readings.length) continue;
+    let winner = null, conf = 'low';
+    if      (field === 'beds') ({ winner, conf } = resolveBeds(readings));
+    else if (field === 'sqft') ({ winner, conf } = resolveSqft(readings));
+    else if (field === 'year') ({ winner, conf } = resolveYear(readings));
+    else                       ({ winner, conf } = resolveDefault(readings, rules.tolerance || 0));
+    if (!winner) continue;
     result[field]  = winner.value;
     confMap[field] = conf;
   }
 }
 
-// Group an array of readings where values agree within `tolerance` (fraction, 0 = exact)
+function resolveBeds(readings) {
+  const rounded = readings.map(r => ({ ...r, value: Math.round(r.value) })).filter(r => r.value >= 0 && r.value <= 12);
+  if (!rounded.length) return { winner: null, conf: 'low' };
+  const freq = {};
+  for (const r of rounded) freq[r.value] = (freq[r.value] || 0) + (TIER_WEIGHT[r.tier] || 1);
+  const bestVal = Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];
+  const winners = rounded.filter(r => String(r.value) === String(bestVal))
+    .sort((a, b) => (TIER_WEIGHT[b.tier] || 1) - (TIER_WEIGHT[a.tier] || 1));
+  const winner = winners[0];
+  const hasConflict = Object.keys(freq).length > 1 &&
+    rounded.some(r => String(r.value) !== String(bestVal) && (r.tier === 'jsonld' || r.tier === 'structured'));
+  const conf = hasConflict ? 'low' : freq[bestVal] >= 5 ? 'high'
+    : (winner.tier === 'jsonld' || winner.tier === 'structured') ? 'medium' : 'low';
+  return { winner, conf };
+}
+
+function resolveSqft(readings) {
+  if (!readings.length) return { winner: null, conf: 'low' };
+  const groups = groupByTolerance(readings, 0.10);
+  let bestGroup = null, bestScore = -1;
+  for (const g of groups) {
+    const s = g.reduce((a, r) => a + (TIER_WEIGHT[r.tier] || 1), 0);
+    if (s > bestScore) { bestScore = s; bestGroup = g; }
+  }
+  if (!bestGroup) return { winner: null, conf: 'low' };
+  const sorted   = [...bestGroup].sort((a, b) => a.value - b.value);
+  const medianR  = sorted[Math.floor(sorted.length / 2)];
+  const allVals  = readings.map(r => r.value).sort((a, b) => a - b);
+  const conflict = groups.length > 1 && (allVals[allVals.length-1] - allVals[0]) / allVals[0] > 0.20;
+  const conf = conflict ? 'low' : bestScore >= 5 ? 'high'
+    : (medianR.tier === 'jsonld' || medianR.tier === 'structured') ? 'medium' : 'low';
+  return { winner: medianR, conf };
+}
+
+function resolveYear(readings) {
+  const pool  = readings.filter(r => !r.possiblyRemodel).length > 0
+    ? readings.filter(r => !r.possiblyRemodel) : readings;
+  const freq  = {};
+  for (const r of pool) {
+    if (!freq[r.value]) freq[r.value] = { count: 0, weight: 0, best: r };
+    freq[r.value].count++;
+    freq[r.value].weight += (TIER_WEIGHT[r.tier] || 1);
+    if ((TIER_WEIGHT[r.tier] || 1) > (TIER_WEIGHT[freq[r.value].best.tier] || 1))
+      freq[r.value].best = r;
+  }
+  const sorted = Object.entries(freq).sort((a, b) =>
+    b[1].weight !== a[1].weight ? b[1].weight - a[1].weight : Number(a[0]) - Number(b[0]));
+  if (!sorted.length) return { winner: null, conf: 'low' };
+  const [, meta] = sorted[0];
+  const conf = meta.weight >= 5 && meta.count >= 2 ? 'high'
+    : (meta.best.tier === 'jsonld' || meta.best.tier === 'structured') ? 'medium' : 'low';
+  return { winner: meta.best, conf: pool.every(r => r.possiblyRemodel) ? 'low' : conf };
+}
+
+function resolveDefault(readings, tolerance) {
+  const groups = groupByTolerance(readings, tolerance);
+  let bestGroup = null, bestScore = -1;
+  for (const g of groups) {
+    const s = g.reduce((a, r) => a + (TIER_WEIGHT[r.tier] || 1), 0);
+    if (s > bestScore) { bestScore = s; bestGroup = g; }
+  }
+  if (!bestGroup) return { winner: null, conf: 'low' };
+  bestGroup.sort((a, b) => (TIER_WEIGHT[b.tier] || 1) - (TIER_WEIGHT[a.tier] || 1));
+  const winner = bestGroup[0];
+  const conf = bestScore >= 5 && bestGroup.length >= 2 ? 'high'
+    : (winner.tier === 'jsonld' || winner.tier === 'structured') ? 'medium' : 'low';
+  return { winner, conf };
+}
+
 function groupByTolerance(readings, tolerance) {
   const groups = [];
   for (const r of readings) {
     let placed = false;
     for (const g of groups) {
-      const ref = g[0].value;
+      const ref  = g[0].value;
       const diff = typeof ref === 'number' && tolerance > 0
-        ? Math.abs(r.value - ref) / (Math.abs(ref) || 1)
-        : (r.value === g[0].value ? 0 : 1);
+        ? Math.abs(r.value - ref) / (Math.abs(ref) || 1) : (r.value === g[0].value ? 0 : 1);
       if (diff <= tolerance) { g.push(r); placed = true; break; }
     }
     if (!placed) groups.push([r]);
@@ -208,413 +700,28 @@ function groupByTolerance(readings, tolerance) {
   return groups;
 }
 
-// ── Address extraction from URL slug ─────────────────────────────────────────
-function extractAddressFromUrl(url) {
-  try {
-    const u = new URL(url);
-    const path = u.pathname;
-    let slug = null;
+// ── Utility ───────────────────────────────────────────────────────────────────
 
-    // Zillow: /homedetails/3803-W-San-Miguel-Ave-Phoenix-AZ-85019/12345_zpid
-    const zillowM = path.match(/\/homedetails\/([^/]+)\//i);
-    if (zillowM && url.includes('zillow.com')) slug = zillowM[1];
+function hasAnyValue(r) { return CORE_FIELDS.some(f => r[f] != null); }
 
-    // Redfin: /AZ/Phoenix/3803-W-San-Miguel-Ave-85019/home/...
-    const redfinM = path.match(/\/([A-Z]{2})\/([^/]+)\/([^/]+)\/home\//i);
-    if (redfinM && url.includes('redfin.com')) {
-      const state    = redfinM[1].toUpperCase();
-      const cityRaw  = redfinM[2].replace(/-/g, ' ');
-      const streetSlug = redfinM[3];
-      const zipM     = streetSlug.match(/-(\d{5})$/);
-      const zipcode  = zipM ? zipM[1] : '';
-      const streetRaw = streetSlug.replace(/-\d{5}$/, '').replace(/-/g, ' ');
-      return { street: toTitleCase(streetRaw), city: toTitleCase(cityRaw), state, zipcode };
-    }
-
-    // Realtor.com: /realestateandhomes-detail/3803-W-San-Miguel-Ave_Phoenix_AZ_85019_M12345
-    const realtorM = path.match(/\/realestateandhomes-detail\/([^/]+)/i);
-    if (realtorM && url.includes('realtor.com')) slug = realtorM[1].replace(/_M\d+$/, '').replace(/_/g, '-');
-
-    if (!slug) return null;
-
-    const parts  = slug.split('-');
-    const zipIdx = parts.findIndex(p => /^\d{5}$/.test(p));
-    if (zipIdx < 3) return null;
-
-    const zipcode  = parts[zipIdx];
-    const state    = parts[zipIdx - 1].toUpperCase();
-    const preState = parts.slice(0, zipIdx - 1);
-
-    let suffixIdx = -1;
-    for (let i = preState.length - 1; i >= 0; i--) {
-      if (STREET_SUFFIXES.some(s => s.toLowerCase() === preState[i].toLowerCase())) {
-        suffixIdx = i; break;
-      }
-    }
-    if (suffixIdx < 0) return null;
-
-    const street = toTitleCase(preState.slice(0, suffixIdx + 1).join(' '));
-    const city   = toTitleCase(preState.slice(suffixIdx + 1).join(' '));
-    if (!street || !city || !state) return null;
-    return { street, city, state, zipcode };
-  } catch (_) { return null; }
+function regexIntVal(text, pattern) {
+  const m = text.match(pattern);
+  return m ? parseInt(String(m[1]).replace(/,/g, '')) : null;
 }
 
-function toTitleCase(str) {
-  return str.replace(/\b\w/g, c => c.toUpperCase());
-}
-
-// ── Fetch syndicated sites in parallel ───────────────────────────────────────
-async function fetchSyndicatedSites(address) {
-  const { street, city, state, zipcode } = address;
-  const citySlug  = city.replace(/\s+/g, '-');
-  const stateLC   = state.toLowerCase();
-  const streetSlug = street.replace(/\s+/g, '-').toLowerCase();
-
-  const targets = [
-    {
-      url: `https://www.highrises.com/${citySlug.toLowerCase()}-${stateLC}/${streetSlug}-${zipcode}/`,
-      parser: parseHighrises,
-    },
-    {
-      url: `https://www.homes.com/${stateLC}/${citySlug.toLowerCase()}/${streetSlug}-${zipcode}/`,
-      parser: parseHomescom,
-    },
-    {
-      url: `https://www.point2homes.com/US/Real-Estate/${state}/${city.replace(/\s+/g, '-')}/${street.replace(/\s+/g, '-')}-${zipcode}.html`,
-      parser: parsePoint2,
-    },
-  ];
-
-  const fetched = await Promise.allSettled(
-    targets.map(({ url, parser }) => fetchAndParse(url, parser))
-  );
-
-  return fetched
-    .filter(r => r.status === 'fulfilled' && r.value)
-    .map(r => r.value);
-}
-
-async function fetchAndParse(url, parser) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
-  try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-      signal: controller.signal,
-      redirect: 'follow',
-    });
-    if (!res.ok) return null;
-    const html = await res.text();
-    return parser(html);
-  } catch (_) { return null; }
-  finally { clearTimeout(timeout); }
-}
-
-// ── Helpers: tagged value constructors ───────────────────────────────────────
-const jld  = v => ({ value: v, tier: 'jsonld' });
-const strd = v => ({ value: v, tier: 'structured' });
-const rgx  = v => ({ value: v, tier: 'regex' });
-
-// ── Site-specific parsers (return tagged values) ──────────────────────────────
-
-function parseHighrises(html) {
-  const r = emptyResult();
-  for (const m of html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/g)) {
-    try {
-      const ld   = JSON.parse(m[1]);
-      const item = Array.isArray(ld) ? ld[0] : ld;
-      if (item?.offers?.price)            r.price = jld(parseInt(String(item.offers.price).replace(/[^0-9]/g,'')));
-      if (item?.numberOfBedrooms)         r.beds  = jld(parseFloat(item.numberOfBedrooms));
-      if (item?.numberOfBathroomsTotal)   r.baths = jld(parseFloat(item.numberOfBathroomsTotal));
-      if (item?.floorSize?.value)         r.sqft  = jld(parseInt(item.floorSize.value));
-      if (item?.yearBuilt)                r.year  = jld(parseInt(item.yearBuilt));
-      if (item?.address?.addressLocality && item?.address?.addressRegion)
-        r.city = jld(`${item.address.addressLocality}, ${item.address.addressRegion}`);
-    } catch (_) {}
-  }
-  // Regex fallbacks only for fields that allow it
-  // Price regex: require list/sale/asking/price context to avoid matching fee amounts
-  if (!r.price) { const v = regexPriceVal(html, /(?:list|sale|asking|price)[^$]{0,30}\$([\d,]+)/i) || regexPriceVal(html, /\$([\d,]+)\s*(?:list price|asking price|sale price)/i); if (v) r.price = rgx(v); }
-  if (!r.beds)  { const v = regexFloatVal(html, /(\d+)\s*(?:bed|BR|bedroom)/i);             if (v !== null) r.beds  = rgx(v); }
-  if (!r.baths) { const v = regexFloatVal(html, /(\d+(?:\.\d+)?)\s*(?:bath|BA)/i);          if (v !== null) r.baths = rgx(v); }
-  if (!r.sqft)  { const v = regexIntVal(html, /([\d,]+)\s*(?:sq\s*ft|sqft)/i);              if (v) r.sqft  = rgx(v); }
-  // No regex for year — too risky (remodel years)
-  return hasAnyTaggedValue(r) ? r : null;
-}
-
-function parseHomescom(html) {
-  const r = emptyResult();
-  for (const m of html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/g)) {
-    try {
-      const ld   = JSON.parse(m[1]);
-      const item = Array.isArray(ld) ? ld[0] : ld;
-      if (item?.['@type'] === 'SingleFamilyResidence' || item?.['@type'] === 'House' || item?.offers) {
-        if (item?.offers?.price)            r.price = jld(parseInt(String(item.offers.price).replace(/[^0-9]/g,'')));
-        if (item?.numberOfBedrooms)         r.beds  = jld(parseFloat(item.numberOfBedrooms));
-        const bathVal = item?.numberOfBathroomsTotal || item?.numberOfBathrooms;
-        if (bathVal)                        r.baths = jld(parseFloat(bathVal));
-        if (item?.floorSize?.value)         r.sqft  = jld(parseInt(item.floorSize.value));
-        if (item?.yearBuilt)                r.year  = jld(parseInt(item.yearBuilt));
-        if (item?.address?.addressLocality && item?.address?.addressRegion)
-          r.city = jld(`${item.address.addressLocality}, ${item.address.addressRegion}`);
-      }
-    } catch (_) {}
-  }
-  // __NEXT_DATA__ as structured fallback
-  if (!r.price || !r.beds) {
-    const nd = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-    if (nd) {
-      try {
-        const data = JSON.parse(nd[1]);
-        const prop = deepFind(data?.props, obj => obj?.listPrice && obj?.beds);
-        if (prop) {
-          if (!r.price && prop.listPrice) r.price = strd(parseInt(prop.listPrice));
-          if (!r.beds  && prop.beds)      r.beds  = strd(parseFloat(prop.beds));
-          if (!r.baths && prop.baths)     r.baths = strd(parseFloat(prop.baths));
-          if (!r.sqft  && prop.sqft)      r.sqft  = strd(parseInt(prop.sqft));
-          if (!r.year  && prop.yearBuilt) r.year  = strd(parseInt(prop.yearBuilt));
-        }
-      } catch (_) {}
-    }
-  }
-  if (!r.beds)  { const v = regexFloatVal(html, /(\d+)\s*(?:bed|BR|bedroom)/i);    if (v !== null) r.beds  = rgx(v); }
-  if (!r.baths) { const v = regexFloatVal(html, /(\d+(?:\.\d+)?)\s*(?:bath|BA)/i); if (v !== null) r.baths = rgx(v); }
-  if (!r.sqft)  { const v = regexIntVal(html, /([\d,]+)\s*(?:sq\s*ft|sqft)/i);     if (v) r.sqft  = rgx(v); }
-  return hasAnyTaggedValue(r) ? r : null;
-}
-
-function parsePoint2(html) {
-  const r = emptyResult();
-  for (const m of html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/g)) {
-    try {
-      const ld   = JSON.parse(m[1]);
-      const item = Array.isArray(ld) ? ld[0] : ld;
-      if (item?.offers?.price)            r.price = jld(parseInt(String(item.offers.price).replace(/[^0-9]/g,'')));
-      if (item?.numberOfBedrooms)         r.beds  = jld(parseFloat(item.numberOfBedrooms));
-      if (item?.numberOfBathroomsTotal)   r.baths = jld(parseFloat(item.numberOfBathroomsTotal));
-      if (item?.floorSize?.value)         r.sqft  = jld(parseInt(item.floorSize.value));
-      if (item?.yearBuilt)                r.year  = jld(parseInt(item.yearBuilt));
-      if (item?.address?.addressLocality && item?.address?.addressRegion)
-        r.city = jld(`${item.address.addressLocality}, ${item.address.addressRegion}`);
-    } catch (_) {}
-  }
-  if (!r.price) { const v = regexPriceVal(html, /(?:list|sale|asking|price)[^$]{0,30}\$([\d,]+)/i) || regexPriceVal(html, /\$([\d,]+)\s*(?:list price|asking price|sale price)/i); if (v) r.price = rgx(v); }
-  if (!r.beds)  { const v = regexFloatVal(html, /(\d+)\s*(?:bed|BR|bedroom)/i);    if (v !== null) r.beds  = rgx(v); }
-  if (!r.baths) { const v = regexFloatVal(html, /(\d+(?:\.\d+)?)\s*(?:bath|BA)/i); if (v !== null) r.baths = rgx(v); }
-  if (!r.sqft)  { const v = regexIntVal(html, /([\d,]+)\s*(?:sq\s*ft|sqft)/i);     if (v) r.sqft  = rgx(v); }
-  return hasAnyTaggedValue(r) ? r : null;
-}
-
-// ── Direct URL fallback ───────────────────────────────────────────────────────
-async function fetchDirectUrl(url) {
-  const r    = emptyResult();
-  const conf = {};
-  const isZillow  = url.includes('zillow.com');
-  const isRedfin  = url.includes('redfin.com');
-  const isRealtor = url.includes('realtor.com');
-
-  const headerSets = [
-    {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none',
-    },
-    {
-      'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-      'Accept': 'text/html',
-    },
-  ];
-
-  let html = '';
-  for (const headers of headerSets) {
-    try {
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 12000);
-      try {
-        const res = await fetch(url, { headers, signal: controller.signal, redirect: 'follow' });
-        if (res.ok) { html = await res.text(); }
-      } finally { clearTimeout(t); }
-      if (html) break;
-    } catch (_) {}
-  }
-
-  if (!html) return { result: r, confMap: conf };
-
-  if (isZillow)  extractZillow(html, r, conf);
-  if (isRedfin)  extractRedfin(html, r, conf);
-  if (isRealtor) extractRealtor(html, r, conf);
-  extractUniversal(html, r, conf, url);
-  return { result: r, confMap: conf };
-}
-
-// ── Zillow direct extractor ───────────────────────────────────────────────────
-function extractZillow(html, result, conf) {
-  const ndMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
-  if (ndMatch) {
-    try {
-      const nd    = JSON.parse(ndMatch[1]);
-      const zprop = deepFind(nd?.props, obj =>
-        obj && typeof obj === 'object' && (obj.price || obj.listingPrice) &&
-        (obj.bedrooms !== undefined || obj.beds !== undefined)
-      );
-      if (zprop) {
-        const set = (f, v) => {
-          if (v === undefined || v === null) return;
-          const rules = FIELD_RULES[f];
-          if (rules) {
-            if (rules.min !== undefined && v < rules.min) return;
-            if (rules.max !== undefined && v > rules.max) return;
-          }
-          result[f] = v; conf[f] = 'medium';
-        };
-        set('price',      zprop.price || zprop.listingPrice);
-        set('beds',       zprop.bedrooms ?? zprop.beds);
-        set('baths',      zprop.bathrooms ?? zprop.baths);
-        set('sqft',       zprop.livingArea ?? zprop.sqft);
-        set('year',       zprop.yearBuilt);
-        set('taxAnnual',  zprop.taxAnnualAmount);
-        set('hoaMonthly', zprop.monthlyHoaFee ?? zprop.hoaFee);
-        set('rent',       zprop.rentZestimate);
-        const a = zprop.address;
-        if (a?.city && (a.state || a.regionCode)) { result.city = `${a.city}, ${a.state||a.regionCode}`; conf.city = 'medium'; }
-      }
-    } catch (_) {}
-  }
-  // JSON key regex fallbacks — structured-ish, but single source
-  const setIfMissing = (f, v, c = 'low') => { if (result[f] === null || result[f] === undefined) { result[f] = v; conf[f] = c; } };
-  const ruleOk = (f, v) => {
-    const rules = FIELD_RULES[f];
-    if (!rules) return true;
-    if (rules.min !== undefined && v < rules.min) return false;
-    if (rules.max !== undefined && v > rules.max) return false;
-    return true;
-  };
-
-  const pi = regexIntVal(html, /"price"\s*:\s*(\d+)/);              if (pi && ruleOk('price', pi))     setIfMissing('price',     pi,  'low');
-  const be = regexFloatVal(html, /"bedrooms"\s*:\s*(\d+(?:\.\d+)?)/); if (be !== null && ruleOk('beds', be)) setIfMissing('beds',  be, 'low');
-  const ba = regexFloatVal(html, /"bathrooms"\s*:\s*(\d+(?:\.\d+)?)/);if (ba !== null && ruleOk('baths',ba)) setIfMissing('baths', ba, 'low');
-  const sq = regexIntVal(html, /"livingArea"\s*:\s*(\d+)/);           if (sq && ruleOk('sqft', sq))     setIfMissing('sqft',      sq,  'low');
-  const yr = regexIntVal(html, /"yearBuilt"\s*:\s*(\d{4})/);          if (yr && ruleOk('year', yr))     setIfMissing('year',      yr,  'low');
-  // tax/HOA from JSON keys is considered structured — acceptable
-  const tx = regexIntVal(html, /"taxAnnualAmount"\s*:\s*([\d.]+)/);   if (tx && ruleOk('taxAnnual', tx))   setIfMissing('taxAnnual',  tx, 'medium');
-  const ho = regexIntVal(html, /"monthlyHoaFee"\s*:\s*([\d.]+)/)
-          || regexIntVal(html, /"hoaFee"\s*:\s*([\d.]+)/);            if (ho !== null && ruleOk('hoaMonthly', ho)) setIfMissing('hoaMonthly', ho, 'medium');
-  if (!result.city) {
-    const m = html.match(/"city"\s*:\s*"([^"]+)".*?"state"\s*:\s*"([A-Z]{2})"/);
-    if (m) { result.city = `${m[1]}, ${m[2]}`; conf.city = 'low'; }
-  }
-}
-
-// ── Redfin direct extractor ───────────────────────────────────────────────────
-function extractRedfin(html, result, conf) {
-  const setIfMissing = (f, v, c = 'low') => {
-    if (result[f] !== null && result[f] !== undefined) return;
-    if (v === null || v === undefined) return;
-    const rules = FIELD_RULES[f];
-    if (rules) {
-      if (rules.min !== undefined && v < rules.min) return;
-      if (rules.max !== undefined && v > rules.max) return;
-    }
-    result[f] = v; conf[f] = c;
-  };
-  const m = html.match(/(?:"listingPrice"|"price")\s*[":>]+\s*\$?([\d,]+)/);
-  if (m) setIfMissing('price', parseInt(m[1].replace(/,/g, '')));
-  const be = regexFloatVal(html, /(\d+)\s*Bed/i);                  if (be !== null) setIfMissing('beds',  be);
-  const ba = regexFloatVal(html, /(\d+(?:\.\d+)?)\s*Bath/i);       if (ba !== null) setIfMissing('baths', ba);
-  const sq = regexIntVal(html, /([\d,]+)\s*Sq[\.\s]?Ft/i);         if (sq)          setIfMissing('sqft',  sq);
-  const yr = regexIntVal(html, /Year\s*Built\D*(\d{4})/i);         if (yr)          setIfMissing('year',  yr);
-  if (!result.city) {
-    const t = html.match(/<title>([^<]+)<\/title>/);
-    if (t) { const c = t[1].match(/,\s*([A-Za-z\s]+),\s*([A-Z]{2})\s*\d/); if (c) { result.city = `${c[1].trim()}, ${c[2]}`; conf.city = 'low'; } }
-  }
-}
-
-// ── Realtor direct extractor ──────────────────────────────────────────────────
-function extractRealtor(html, result, conf) {
-  const setIfMissing = (f, v, c = 'medium') => { if ((result[f] === null || result[f] === undefined) && v !== null && v !== undefined) { result[f] = v; conf[f] = c; } };
-  for (const m of html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)) {
-    try {
-      const ld   = JSON.parse(m[1]);
-      const item = Array.isArray(ld) ? ld[0] : ld;
-      if (item?.offers?.price)       setIfMissing('price', parseInt(item.offers.price), 'medium');
-      if (item?.floorSize?.value)    setIfMissing('sqft',  parseInt(item.floorSize.value), 'medium');
-      if (item?.yearBuilt)           setIfMissing('year',  parseInt(item.yearBuilt), 'medium');
-      if (item?.address?.addressLocality && item?.address?.addressRegion)
-        setIfMissing('city', `${item.address.addressLocality}, ${item.address.addressRegion}`, 'medium');
-    } catch (_) {}
-  }
-  const nd = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
-  if (nd) {
-    try {
-      const data = JSON.parse(nd[1]);
-      const prop = deepFind(data?.props, obj => obj?.list_price && obj?.description);
-      if (prop) {
-        if (prop.list_price)          setIfMissing('price',      prop.list_price,         'medium');
-        const desc = prop.description || {};
-        if (desc.beds)                setIfMissing('beds',        desc.beds,               'medium');
-        if (desc.baths)               setIfMissing('baths',       desc.baths,              'medium');
-        if (desc.sqft)                setIfMissing('sqft',        desc.sqft,               'medium');
-        if (desc.year_built)          setIfMissing('year',        desc.year_built,         'medium');
-        if (prop.hoa?.fee !== undefined) setIfMissing('hoaMonthly', prop.hoa.fee,          'medium');
-        if (!result.city) {
-          const loc = prop.location?.address;
-          if (loc?.city && loc?.state_code) setIfMissing('city', `${loc.city}, ${loc.state_code}`, 'medium');
-        }
-        // Tax from Realtor NEXT_DATA
-        const taxV = prop.tax_history?.[0]?.tax || prop.taxAnnual;
-        if (taxV) setIfMissing('taxAnnual', parseInt(taxV), 'medium');
-      }
-    } catch (_) {}
-  }
-}
-
-// ── Universal HTML fallback (city only) ───────────────────────────────────────
-function extractUniversal(html, result, conf, url) {
-  if (!result.city) {
-    const og = html.match(/og:title.*?content="([^"]+)"/i) || html.match(/<title>([^<]+)<\/title>/);
-    if (og) { const c = og[1].match(/([A-Za-z\s]{3,}),\s*([A-Z]{2})/); if (c) { result.city = `${c[1].trim()}, ${c[2]}`; conf.city = 'low'; } }
-  }
-  if (!result.city) {
-    const addr = extractAddressFromUrl(url);
-    if (addr) { result.city = `${addr.city}, ${addr.state}`; conf.city = 'high'; }
-  }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function hasAnyTaggedValue(r) {
-  return CORE_FIELDS.some(f => r[f] !== null && r[f] !== undefined);
-}
-
-// Return raw number or null (for use in direct extractors, not tagged)
-function regexIntVal(html, pattern) {
-  const m = html.match(pattern);
-  return m ? parseInt(String(m[1]).replace(/,/g,'')) : null;
-}
-function regexFloatVal(html, pattern) {
-  const m = html.match(pattern);
+function regexFloatVal(text, pattern) {
+  const m = text.match(pattern);
   return m ? parseFloat(m[1]) : null;
 }
-function regexPriceVal(html, pattern) {
-  const m = html.match(pattern);
+
+function regexPriceVal(text, pattern) {
+  const m = text.match(pattern);
   if (!m) return null;
-  const v = parseInt(String(m[1]).replace(/,/g,''));
-  return (v > 10000 && v < 50000000) ? v : null;
+  const raw = String(m[1]).replace(/,/g, '');
+  const v   = raw.toUpperCase().endsWith('M') ? parseFloat(raw) * 1_000_000
+            : raw.toUpperCase().endsWith('K') ? parseFloat(raw) * 1_000
+            : parseInt(raw);
+  return (v > 10_000 && v < 50_000_000) ? v : null;
 }
 
-function deepFind(obj, predicate, depth = 0) {
-  if (!obj || typeof obj !== 'object' || depth > 10) return null;
-  if (predicate(obj)) return obj;
-  for (const v of Object.values(obj)) {
-    const r = deepFind(v, predicate, depth + 1);
-    if (r) return r;
-  }
-  return null;
-}
-
-export const config = { maxDuration: 20 };
+export const config = { maxDuration: 45 };

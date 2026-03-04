@@ -5,6 +5,8 @@ import { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://rentaliq.app';
+
 // -- jsPDF loader (same as main page) ----------------------------------------
 async function loadJsPDF() {
   if (typeof window === 'undefined') return null;
@@ -285,7 +287,7 @@ export default function SharePage({ initialDeal, initialError }) {
         <meta name="twitter:card" content="summary_large_image"/>
         <meta name="twitter:title" content={deal ? `${vc.label}: ${deal.address || 'Property'} - RentalIQ` : 'RentalIQ Analysis'}/>
         <meta name="twitter:description" content={deal ? `Score ${score}/100 · ${verdict} verdict · ${deal.city || ''}` : 'View rental property analysis'}/>
-        <meta name="twitter:image" content="https://rentaliq.app/og-image.png"/>
+        <meta name="twitter:image" content={`${APP_URL}/og-image.png`}/>
         <meta name="viewport" content="width=device-width,initial-scale=1"/>
         {/* Fonts loaded via _app.js */}
       </Head>

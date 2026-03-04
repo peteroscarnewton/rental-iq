@@ -15,6 +15,7 @@
  */
 
 import { fetchStrData, getStrRegulation } from '../../lib/strDataFetcher.js';
+import { rateLimit } from '../../lib/rateLimit.js';
 import { getSupabaseAdmin }               from '../../lib/supabase.js';
 
 export const config = { api: { bodyParser: false }, maxDuration: 20 };
@@ -28,6 +29,8 @@ function cityToSlug(city, beds) {
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
+  if (!rateLimit(req, { max: 30, windowMs: 60_000 })) return res.status(429).json({ error: 'Too many requests. Please wait a minute.' });
+
 
   const { city, beds } = req.query;
   if (!city) return res.status(400).json({ error: 'city required' });

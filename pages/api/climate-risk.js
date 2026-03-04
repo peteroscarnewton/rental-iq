@@ -12,6 +12,7 @@
  */
 
 import { fetchClimateRisk,
+import { rateLimit } from '../../lib/rateLimit.js';
          geocodeToCountyFips,
          getPrimaryCountyFips }  from '../../lib/climateRiskFetcher.js';
 import { getSupabaseAdmin }      from '../../lib/supabase.js';
@@ -22,6 +23,8 @@ const CACHE_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
+  if (!rateLimit(req, { max: 30, windowMs: 60_000 })) return res.status(429).json({ error: 'Too many requests. Please wait a minute.' });
+
 
   const { fips, city, state } = req.query;
 

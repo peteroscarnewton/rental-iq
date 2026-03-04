@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { C, VERDICT_CFG, clamp } from './tokens';
-import { Label, Card, Pill, AnimatedBar } from './InputComponents';
+import { Label, Card, Pill, AnimatedBar, NewAnalysisBtn } from './InputComponents';
 import {
   StressPanel, CommandCenter, WealthProjection, OpportunityCostPanel,
   FloodRiskCard, SupplyDemandCard, SchoolQualityBadge, AssumptionsBadge,
@@ -9,7 +9,7 @@ import {
   KeyMetrics, NOIBreakEven, ExpenseBreakdown, RentScenarios, ScoreRing,
   ScoreBreakdown, BreakEvenIntelligence, ProsAndCons,
 } from './cards/index';
-import { ShareToolbar, FloatingChat } from './Overlays';
+import { ShareToolbar } from './Overlays';
 
 export function NeighborhoodCard({ data, loading, schoolData }) {
   if (!loading && !data) return null;

@@ -29,6 +29,7 @@ export function STRRegBadge({data}) {
           STR {isBanned ? 'Banned' : 'Restricted'} — {reg.source?.split('(')[0]?.trim() || 'local ordinance'}
         </div>
         <div style={{fontSize: 12.5, color: C.textBody, lineHeight: 1.55}}>{reg.detail}</div>
+        <div style={{fontSize: 10.5, color: C.muted, marginTop: 4}}>Data as of 2025-Q1 · Verify with local municipality before purchasing</div>
       </div>
     </div>
   );

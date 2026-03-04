@@ -5,9 +5,11 @@ import Head from 'next/head';
 import Link from 'next/link';
 import { TOKEN_PACKAGES } from '../lib/tokenPackages';
 
-import { C, MODES, EMPTY_FIELDS, EMPTY_ADV, EMPTY_PROFILE, SAMPLE_DEAL, LOADING_STEPS } from '../components/analyze/tokens';
+import { C, MODES, EMPTY_FIELDS, EMPTY_ADV, EMPTY_PROFILE, SAMPLE_DEAL, LOADING_STEPS, LOAN_TYPES } from '../components/analyze/tokens';
+
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://rentaliq.app';
 import { MD_BASELINE } from '../components/analyze/marketData';
-import { setMarketData, recalcFromEdits } from '../components/analyze/marketHelpers';
+import { setMarketData, recalcFromEdits, getMgmtRateBenchmark, getClosingCostForState } from '../components/analyze/marketHelpers';
 import { InputForm, ConfirmCard, LoadingSpinner, Card, Label } from '../components/analyze/InputComponents';
 import { Results } from '../components/analyze/Results';
 import { FloatingChat } from '../components/analyze/Overlays';
@@ -196,10 +198,24 @@ export default function Home() {
           return;
         }
       }
-      setFetchStatus('loading'); setFetchMsg('Reading listing...'); setFieldStatus({});
+      setFetchStatus('loading'); setFetchMsg('Searching listing...'); setFieldStatus({});
       lastFetchedUrl.current = url;
       const controller = new AbortController();
       fetchAbortRef.current = controller;
+
+      // Progressive feedback — AI grounding takes 10-15s, users need to know it's working
+      const msgTimer1 = setTimeout(() => {
+        if (fetchAbortRef.current === controller) setFetchMsg('Looking up property data...');
+      }, 4000);
+      const msgTimer2 = setTimeout(() => {
+        if (fetchAbortRef.current === controller) setFetchMsg('Almost there — fetching taxes & details...');
+      }, 10000);
+      // Hard frontend timeout — if Vercel 504s or AI stalls, fail gracefully after 38s
+      const hardTimeout = setTimeout(() => {
+        if (fetchAbortRef.current === controller) {
+          controller.abort();
+        }
+      }, 38000);
       // Snapshot fields BEFORE async fetch so autofill won't overwrite manually typed values
       let fieldsAtFetchStart = {};
       setFields(cur => { fieldsAtFetchStart = cur; return cur; });
@@ -277,10 +293,13 @@ export default function Home() {
           return next;
         }), 4000);
       } catch(err) {
-        if (err.name === 'AbortError') return; // stale request cancelled - do nothing
+        if (err.name === 'AbortError') return; // stale request cancelled or timed out
         setFetchStatus('error');
         setFetchMsg('Network error - fill in manually.');
       } finally {
+        clearTimeout(msgTimer1);
+        clearTimeout(msgTimer2);
+        clearTimeout(hardTimeout);
         if (fetchAbortRef.current === controller) fetchAbortRef.current = null;
       }
     }, 500);
@@ -682,14 +701,14 @@ export default function Home() {
         <meta property="og:title" content="RentalIQ - Instant Rental Property Analysis"/>
         <meta property="og:description" content="Paste any listing URL. Get cap rate, cash flow, wealth projection, and an AI buy/pass verdict instantly."/>
         <meta property="og:type" content="website"/>
-        <meta property="og:url" content="https://rentaliq.app/analyze"/>
-        <meta property="og:image" content="https://rentaliq.app/og-image.png"/>
+        <meta property="og:url" content={`${APP_URL}/analyze`}/>
+        <meta property="og:image" content={`${APP_URL}/og-image.png`}/>
         <meta property="og:image:width" content="1200"/>
         <meta property="og:image:height" content="630"/>
         <meta name="twitter:card" content="summary_large_image"/>
         <meta name="twitter:site" content="@rentaliq"/>
-        <meta name="twitter:image" content="https://rentaliq.app/og-image.png"/>
-        <link rel="canonical" href="https://rentaliq.app/analyze"/>
+        <meta name="twitter:image" content={`${APP_URL}/og-image.png`}/>
+        <link rel="canonical" href={`${APP_URL}/analyze`}/>
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
       </Head>
       <style>{`

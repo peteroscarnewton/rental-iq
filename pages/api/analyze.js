@@ -6,6 +6,8 @@ import { getMarketData, stateTaxRate, stateInsRate, cityAppreciation,
          getHvsVacancy,
        } from "../../lib/marketData.js";
 import { formatLandlordLawPrompt }    from "../../lib/landlordLaws.js";
+// Phase 9: live cache readers for auto-healing data
+import { getLandlordLawLive, getCityRentControlLive, getStrRegulationLive, getStateTaxRateLive } from "../../lib/marketData.js";
 import { formatCityRentControlPrompt, getCityRentControl } from "../../lib/cityRentControlDb.js";
 import { getCapRateForCity, getMgmtFeeForCity } from "../../lib/marketBenchmarkFetcher.js";
 import { getTaxTrendForState, formatTaxTrendPrompt } from "../../lib/taxTrendFetcher.js";
@@ -186,8 +188,8 @@ Return ONLY valid JSON:
   "pros": ["4 items with specific numbers"],
   "cons": ["3 items with specific numbers - if HOA or PMI materially affects cash flow, mention it"],
   "breakEvenIntelligence": {
-    "breakEvenRentForPositiveCF": "$X/mo (minimum rent for $0 cashflow)",
-    "breakEvenRentFor10CoC": "$X/mo (rent needed for 10% CoC)",
+    "breakEvenRentForPositiveCF": "$X/mo (minimum rent for $0 cashflow). Math: fixedCosts = mortgage+taxes_mo+insurance_mo+maintenance_mo+capex+hoa+pmi. rentMultiplier = (1-vacancy%)*(1-mgmt%). breakEvenRentForPositiveCF = fixedCosts/rentMultiplier",
+    "breakEvenRentFor10CoC": "$X/mo (rent needed for 10% CoC). Math: targetCF = cashInvested*0.10/12. breakEvenRentFor10CoC = (fixedCosts+targetCF)/rentMultiplier",
     "breakEvenPrice": "$Xk or null (max price for positive cashflow at current rent)",
     "rentGapToPositive": "+$X/mo needed or null if already positive",
     "rentGapTo10CoC": "+$X/mo needed or null if already at 10%+",
@@ -448,10 +450,12 @@ export default async function handler(req, res) {
   const hvsData     = await getHvsVacancy(db);
 
   // City rent control — static lookup (instantaneous, no I/O)
-  const cityRentCtrl = getCityRentControl(
-    city?.split(',')[0]?.trim() || '',
-    stateCode || ''
-  );
+  // Phase 9: prefer live-cached rent control data (auto-heals when laws change)
+  const _rcCity = city?.split(',')[0]?.trim() || '';
+  const _rcSlug = `${_rcCity.toLowerCase().replace(/[^a-z0-9]+/g,'_')}_${(stateCode||'').toLowerCase()}`;
+  const cityRentCtrl = db
+    ? (await getCityRentControlLive(db, _rcSlug)) || getCityRentControl(_rcCity, stateCode || '')
+    : getCityRentControl(_rcCity, stateCode || '');
 
   // Note: SAFMR rent is fetched client-side via /api/safmr-rent after neighborhood
   // enrichment provides the ZIP code. It is not available here since the frontend
@@ -464,7 +468,7 @@ export default async function handler(req, res) {
   const taxTrend = getTaxTrendForState(stateCode);
   // STR regulation: static lookup — relevant for SFR/condo only
   const strReg = (propertyType === 'sfr' || propertyType === 'condo' || !propertyType)
-    ? getStrRegulation(city)
+    ? (db ? (await getStrRegulationLive(db, city?.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/_+$/,''))) || getStrRegulation(city) : getStrRegulation(city))
     : null;
 
   // -- Fetch real market rent data before calling Gemini ---------------------
@@ -500,7 +504,43 @@ export default async function handler(req, res) {
   if (marketRentData?.mid) settings.marketRent = marketRentData;
 
   // ── Landlord law structured data (Phase 2D) ─────────────────────────────
-  const landlordLawBlock = stateCode ? formatLandlordLawPrompt(stateCode, city) : '';
+  // Phase 9: try to use live landlord law data from cache
+  let landlordLawBlock = '';
+  if (stateCode) {
+    if (db) {
+      const liveLaw = await getLandlordLawLive(db, stateCode);
+      if (liveLaw) {
+        // formatLandlordLawPrompt reads from the static table — pass live data directly
+        const rc = liveLaw.rentControlState
+          ? 'YES — statewide rent stabilization/control in effect'
+          : liveLaw.rentControlPreempted
+            ? 'NO — state law preempts all local rent control'
+            : liveLaw.rentControlLocalOk
+              ? 'State: none — but cities MAY have local ordinances (check city)'
+              : 'No rent control at any level';
+        landlordLawBlock = [
+          `LANDLORD LAW DATA FOR ${stateCode} — inject into landlordScore:`,
+          `- Eviction notice to pay or quit: ${liveLaw.evictionNoticeDays} days${liveLaw._evictionSource ? ` (${liveLaw._evictionSource}, ${liveLaw._evictionAsOf})` : ''}`,
+          `- Rent control: ${rc}`,
+          `- Just cause eviction required: ${liveLaw.justCauseRequired ? 'YES — must have qualifying reason' : 'No'}`,
+          `- Mandatory grace period before late fee: ${liveLaw.mandatoryGracePeriod ? 'YES' : 'No'}`,
+          `- Security deposit limit: ${liveLaw.secDepositMaxMonths > 0 ? `${liveLaw.secDepositMaxMonths} months` : 'No statutory limit'}`,
+          `- Landlord-friendliness score (0–100): ${liveLaw.score}`,
+          `- Key caveats: ${liveLaw.notes}`,
+          ``,
+          `Use score ${liveLaw.score} as the anchor for landlordScore. `,
+          `Adjust ±5 pts if the specific city (${city || 'unknown'}) has known local ordinances `,
+          `significantly more or less restrictive than the state default noted above.`,
+          `Do NOT hallucinate eviction timelines or rent control status — use only the data above.`,
+          `NOTE: This data reflects laws as of ${liveLaw._evictionAsOf || '2025'}. Laws can change — instruct the user to verify with a local real estate attorney for current requirements.`,
+        ].join('\n');
+      } else {
+        landlordLawBlock = formatLandlordLawPrompt(stateCode, city);
+      }
+    } else {
+      landlordLawBlock = formatLandlordLawPrompt(stateCode, city);
+    }
+  }
 
   // ── Employment data block (Phase 3C) ─────────────────────────────────────
   // Injects real BLS LAUS metro unemployment data into the market score guidance.
@@ -787,7 +827,8 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: msg });
   }
 
-  const geminiBody = await geminiRes.json();
+  const geminiBody = await geminiRes.json().catch(() => null);
+  if (!geminiBody) return res.status(502).json({ error: 'AI returned an unreadable response. Please try again.' });
 
   // Detect quota / safety / no-candidate responses before attempting to parse
   if (!geminiBody?.candidates || geminiBody.candidates.length === 0) {

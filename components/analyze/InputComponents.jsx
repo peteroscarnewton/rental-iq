@@ -524,3 +524,31 @@ export function ConfirmCard({ fields, adv, mode, profile, onConfirm, onBack }) {
     </Card>
   );
 }
+
+// NewAnalysisBtn — two-step confirm before discarding edits.
+// Lives here (not in Results.jsx) to avoid circular import:
+//   Results → cards/index → CommandCenter → Results (would create a cycle).
+export function NewAnalysisBtn({ onReset }) {
+  const [confirm, setConfirm] = useState(false);
+  if (confirm) {
+    return (
+      <div style={{display:'flex',gap:6,alignItems:'center',animation:'riq-fadeup 0.15s ease'}}>
+        <span style={{fontSize:11,color:C.amber,fontWeight:600,whiteSpace:'nowrap'}}>Discard edits?</span>
+        <button onClick={onReset}
+          style={{fontSize:12,color:'#fff',background:C.amber,border:'none',borderRadius:7,padding:'5px 10px',cursor:'pointer',fontFamily:'inherit',fontWeight:700}}>
+          Yes
+        </button>
+        <button onClick={()=>setConfirm(false)}
+          style={{fontSize:12,color:C.muted,background:'none',border:`1px solid ${C.border}`,borderRadius:7,padding:'5px 10px',cursor:'pointer',fontFamily:'inherit'}}>
+          No
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button onClick={()=>setConfirm(true)}
+      style={{fontSize:12,color:C.muted,background:'none',border:`1px solid ${C.border}`,borderRadius:8,padding:'6px 14px',cursor:'pointer',fontFamily:'inherit',whiteSpace:'nowrap'}}>
+      New Analysis
+    </button>
+  );
+}

@@ -14,11 +14,14 @@
  */
 
 import { getSupabaseAdmin } from '../../lib/supabase.js';
+import { rateLimit } from '../../lib/rateLimit.js';
 
 export const config = { api: { bodyParser: false } };
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
+  if (!rateLimit(req, { max: 30, windowMs: 60_000 })) return res.status(429).json({ error: 'Too many requests. Please wait a minute.' });
+
 
   const city = req.query.city?.trim();
   if (!city || city.length < 3) {

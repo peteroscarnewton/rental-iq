@@ -26,6 +26,13 @@ const ALERT_AGE_HOURS = {
   capex_ppi_multiplier:        35 * 24,  // BLS PPI monthly — alert after 35 days
   // Phase 4 additions
   'market_snapshot:current':   10 * 24, // Weekly digest snapshot — alert after 10 days
+  // Phase 9 — auto-heal keys
+  'state_tax_rates':           400 * 24, // Census ACS annual — alert after 400 days
+  'landlord_laws':              45 * 24, // Eviction Lab monthly — alert after 45 days
+  'str_regulations':           120 * 24, // NMHC quarterly — alert after 120 days
+  'market_cap_rates':          120 * 24, // Computed quarterly — alert after 120 days
+  'rent_control_db':            45 * 24, // NLIHC monthly — alert after 45 days
+  'mgmt_fee_rates':            400 * 24, // NARPM annual — alert after 400 days
   landlord_laws_audit:        130 * 24, // Quarterly law check — alert after 130 days
   // Phase 6 additions
   building_permits_sentinel:   45 * 24, // Monthly Census BPS — alert after 45 days
@@ -48,7 +55,7 @@ export default async function handler(req, res) {
 
   const authHeader = req.headers.authorization;
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 

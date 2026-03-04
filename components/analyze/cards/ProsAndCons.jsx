@@ -1,12 +1,9 @@
 import { useState, useEffect } from 'react';
 import { C, clamp, scoreColor } from '../tokens';
 import { Label, Card, Pill, AnimatedBar } from '../InputComponents';
-import { generateDealMemo } from '../../../lib/pdfExport';
-import { getMarketData } from '../marketHelpers';
 const verdictColor = v => v === 'YES' ? C.green : v === 'NO' ? C.red : C.amber;
 
 export function ProsAndCons({data}) {
-  const _MD = getMarketData();
   const confidence = data.dataConfidence || 'Medium';
   const isLowConf = confidence === 'Low';
   const isMedConf = confidence === 'Medium';

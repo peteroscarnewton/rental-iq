@@ -3,6 +3,9 @@ import Link from 'next/link';
 import { useState, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
+import { TOKEN_PACKAGES } from '../lib/tokenPackages';
+
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://rentaliq.app';
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const C = {
@@ -270,11 +273,11 @@ export default function LandingPage() {
       <Head>
         <title>RentalIQ — Does the deal cash flow?</title>
         <meta name="description" content="Paste any Zillow, Redfin, or Realtor.com listing. Get cap rate, cash flow, wealth projection, and a buy/pass verdict in seconds."/>
-        <link rel="canonical" href="https://rentaliq.app/"/>
+        <link rel="canonical" href={`${APP_URL}/`}/>
         <meta property="og:title" content="RentalIQ — Does the deal cash flow?"/>
         <meta property="og:description" content="AI-powered rental property analysis. Cap rate, cash flow, and a buy/pass verdict in seconds."/>
-        <meta property="og:image" content="https://rentaliq.app/og-image.png"/>
-        <meta property="og:url" content="https://rentaliq.app/"/>
+        <meta property="og:image" content={`${APP_URL}/og-image.png`}/>
+        <meta property="og:url" content={`${APP_URL}/`}/>
         <meta property="og:type" content="website"/>
         <meta name="twitter:card" content="summary_large_image"/>
         <meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -685,6 +688,7 @@ export default function LandingPage() {
               <h2 style={{ fontFamily:"'Libre Baskerville', Georgia, serif", fontSize:'clamp(26px, 3vw, 40px)', fontWeight:700, letterSpacing:'-0.025em', color:C.text }}>
                 What investors are saying
               </h2>
+              <p style={{ fontSize:12, color:C.muted, marginTop:8, fontStyle:'italic' }}>Testimonials from early users. Individual results vary based on market, property, and inputs.</p>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:18 }} className="who-grid">
               {[
@@ -750,7 +754,7 @@ export default function LandingPage() {
                 </h2>
                 <p style={{ fontSize:15.5, color:C.muted, lineHeight:1.68, marginBottom:32 }}>
                   A Cleveland SFR listed at $129k. Every number you see was computed
-                  from real inputs — not cherry-picked, not simplified. Score,
+                  as a representative sample — the same output format and data depth you get on any deal. Score,
                   verdict, expense model, strengths, and risks.
                 </p>
 
@@ -922,59 +926,51 @@ export default function LandingPage() {
             </div>
 
             <div className="pricing-grid" style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:18, maxWidth:820, margin:'0 auto' }}>
-              {[
-                {
-                  tokens:1, price:'$5', per:'$5.00 per analysis',
-                  label:'Single', badge:null, featured:false,
-                  desc:"Perfect for evaluating one deal you're already serious about.",
-                  delay:'d1',
-                },
-                {
-                  tokens:10, price:'$20', per:'$2.00 per analysis',
-                  label:'Bundle', badge:'Most Popular', featured:true,
-                  desc:'Ideal for investors screening multiple properties every week.',
-                  delay:'d2',
-                },
-                {
-                  tokens:100, price:'$50', per:'$0.50 per analysis',
-                  label:'Power', badge:'Best Value', featured:false,
-                  desc:'For agents, advisors, and investors analyzing markets at volume.',
-                  delay:'d3',
-                },
-              ].map(pkg => (
+              {(() => {
+                const PKG_META = {
+                  tokens_1:   { name:'Single', delay:'d1', desc:"Perfect for evaluating one deal you're already serious about." },
+                  tokens_10:  { name:'Bundle', delay:'d2', desc:'Ideal for investors screening multiple properties every week.' },
+                  tokens_100: { name:'Power',  delay:'d3', desc:'For agents, advisors, and investors analyzing markets at volume.' },
+                };
+                return TOKEN_PACKAGES.map(pkg => {
+                  const meta     = PKG_META[pkg.id] || { name: pkg.label, delay:'d1', desc:'' };
+                  const priceStr = `$${(pkg.price / 100).toFixed(0)}`;
+                  const perStr   = `$${(pkg.price / pkg.tokens / 100).toFixed(2)} per analysis`;
+                  const featured = pkg.badge === 'Most Popular';
+                  return (
                 <div
-                  key={pkg.tokens}
-                  className={`pricing-card${pkg.featured?' featured':''} reveal${pricingV?' up':''} ${pkg.delay}`}
+                  key={pkg.id}
+                  className={`pricing-card${featured?' featured':''} reveal${pricingV?' up':''} ${meta.delay}`}
                 >
                   {pkg.badge && (
                     <div style={{
                       position:'absolute', top:0, right:20,
-                      background: pkg.featured ? C.green : C.text,
+                      background: featured ? C.green : C.text,
                       color:'#fff', fontSize:9.5, fontWeight:700,
                       letterSpacing:'0.07em', textTransform:'uppercase',
                       padding:'4px 12px', borderRadius:'0 0 9px 9px',
                     }}>{pkg.badge}</div>
                   )}
 
-                  <div style={{ fontSize:11, fontWeight:700, letterSpacing:'0.09em', textTransform:'uppercase', color: pkg.featured ? C.green : C.muted, marginBottom:8 }}>
-                    {pkg.label}
+                  <div style={{ fontSize:11, fontWeight:700, letterSpacing:'0.09em', textTransform:'uppercase', color: featured ? C.green : C.muted, marginBottom:8 }}>
+                    {meta.name}
                   </div>
 
                   <div style={{ display:'flex', alignItems:'baseline', gap:2, marginBottom:3 }}>
-                    <span style={{ fontSize:44, fontWeight:800, color:C.text, letterSpacing:'-0.045em', lineHeight:1 }}>{pkg.price}</span>
+                    <span style={{ fontSize:44, fontWeight:800, color:C.text, letterSpacing:'-0.045em', lineHeight:1 }}>{priceStr}</span>
                   </div>
-                  <div style={{ fontSize:12, color:C.muted, marginBottom:10 }}>{pkg.per}</div>
+                  <div style={{ fontSize:12, color:C.muted, marginBottom:10 }}>{perStr}</div>
 
-                  <div style={{ fontSize:22, fontWeight:700, letterSpacing:'-0.02em', color: pkg.featured ? C.green : C.text, marginBottom:16 }}>
+                  <div style={{ fontSize:22, fontWeight:700, letterSpacing:'-0.02em', color: featured ? C.green : C.text, marginBottom:16 }}>
                     {pkg.tokens} {pkg.tokens === 1 ? 'token' : 'tokens'}
                   </div>
 
-                  <p style={{ fontSize:13.5, color:C.muted, lineHeight:1.6, marginBottom:24, minHeight:48 }}>{pkg.desc}</p>
+                  <p style={{ fontSize:13.5, color:C.muted, lineHeight:1.6, marginBottom:24, minHeight:48 }}>{meta.desc}</p>
 
-                  <Link href={pkg.tokens === 1 ? '/analyze' : '/auth?plan=' + pkg.label.toLowerCase()} style={{
+                  <Link href={pkg.tokens === 1 ? '/analyze' : '/auth?plan=' + meta.name.toLowerCase()} style={{
                     display:'block', textAlign:'center', textDecoration:'none',
-                    background: pkg.featured ? C.green : C.soft,
-                    color: pkg.featured ? '#fff' : C.text,
+                    background: featured ? C.green : C.soft,
+                    color: featured ? '#fff' : C.text,
                     borderRadius:11, padding:'12px',
                     fontSize:14, fontWeight:700, letterSpacing:'-0.01em',
                     transition:'opacity .15s',
@@ -984,7 +980,7 @@ export default function LandingPage() {
                     {pkg.tokens === 1 ? 'Try free →' : 'Get started →'}
                   </Link>
                 </div>
-              ))}
+              );});})()}
             </div>
 
             <p style={{ textAlign:'center', fontSize:12.5, color:C.muted, marginTop:22 }}>
@@ -1059,7 +1055,7 @@ export default function LandingPage() {
               {[
                 {
                   q:"Is this just a ChatGPT wrapper?",
-                  a:"No. The AI (Google Gemini) receives a structured prompt containing real data from HUD, FRED, BLS, Census, and FHFA — not just your inputs. The rent estimate is anchored to HUD Small Area Fair Market Rents for your specific ZIP code. Mortgage rates come from FRED's daily feed. Property tax and insurance rates are state-calibrated from Tax Foundation and NAIC data. The AI synthesizes all of this into a verdict. Without that data layer, it would just be guessing.",
+                  a:"No. The AI (Google Gemini) receives a structured prompt containing real data from HUD, FRED, BLS, Census, and FHFA — not just your inputs. The rent estimate is anchored to HUD Small Area Fair Market Rents for your specific ZIP code. Mortgage rates come from FRED (Freddie Mac PMMS, updated weekly). All market data is auto-refreshed by background jobs — property tax rates from Census ACS, landlord laws from Eviction Lab, STR rules from NMHC, appreciation from FHFA, and so on. No data is permanently hardcoded. Property tax and insurance rates are state-calibrated from Tax Foundation and NAIC data. The AI synthesizes all of this into a verdict. Without that data layer, it would just be guessing.",
                 },
                 {
                   q:"How accurate is the rent estimate?",

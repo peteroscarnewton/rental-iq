@@ -43,41 +43,39 @@ export default async function handler(req, res) {
 
     const db = getSupabaseAdmin();
 
-    // Idempotency - check if we've already processed this session
-    const { data: existing } = await db
-      .from('purchases')
-      .select('id')
-      .eq('stripe_session_id', stripeSessionId)
-      .single();
-
-    if (existing) {
-      return res.status(200).json({ received: true });
-    }
-
-    // Credit tokens using atomic RPC to avoid race conditions
-    const { error: rpcError } = await db.rpc('add_tokens', {
-      p_email:  email,
-      p_tokens: tokensToAdd,
+    // Single atomic RPC: inserts the purchase record AND credits tokens in one transaction.
+    // Returns: 'ok' | 'duplicate' | 'no_user'
+    // If the DB goes down mid-call, Postgres rolls back both writes automatically.
+    // No orphaned state, no double-credit possible on retry.
+    const { data: result, error: rpcError } = await db.rpc('process_purchase', {
+      p_email:             email,
+      p_stripe_session_id: stripeSessionId,
+      p_tokens:            tokensToAdd,
+      p_amount_cents:      amountCents,
     });
 
     if (rpcError) {
-      console.error('Failed to add tokens:', rpcError);
-      return res.status(500).json({ error: 'Failed to credit tokens' });
+      console.error('process_purchase RPC error:', rpcError);
+      return res.status(500).json({ error: 'Payment processing error' });
     }
 
-    // Store Stripe customer ID for billing portal access
+    if (result === 'duplicate') {
+      // Already processed — idempotent replay from Stripe. Nothing to do.
+      return res.status(200).json({ received: true });
+    }
+
+    if (result === 'no_user') {
+      // User deleted their account between purchase and webhook delivery.
+      // Log for manual review but acknowledge to Stripe (retrying won't help).
+      console.error('process_purchase: user not found for email', email, '— manual refund may be needed');
+      return res.status(200).json({ received: true });
+    }
+
+    // result === 'ok' — store Stripe customer ID for billing portal (non-critical, best-effort)
     const customerId = session.customer;
     if (customerId) {
       await db.from('users').update({ stripe_customer_id: customerId }).eq('email', email);
     }
-
-    // Record purchase for audit trail
-    await db.from('purchases').insert({
-      user_email:        email,
-      stripe_session_id: stripeSessionId,
-      tokens_added:      tokensToAdd,
-      amount_cents:      amountCents,
-    });
 
   }
 

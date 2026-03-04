@@ -9,7 +9,8 @@
 // If that dependency is ever removed, recalcFromEdits belongs in its own
 // lib/dealCalc.js — it is financial math, not market data infrastructure.
 
-import { MD_BASELINE, GOAL_WEIGHTS } from './marketData';
+import { MD_BASELINE } from './marketData';
+import { GOAL_WEIGHTS } from './tokens';
 
 // The live market data object — starts from baseline, updated by setMarketData()
 let _MD = MD_BASELINE;
@@ -264,7 +265,11 @@ export function recalcFromEdits(data, edits) {
     breakEvenPrice = Math.round((lo2 + hi2) / 2 / 1000) * 1000;
   }
   const targetCF                 = cashInvested * 10 / 100 / 12;
-  const breakEvenRentFor10CoC    = Math.round((total + targetCF) / 25) * 25;
+  // Correct formula: rent * rentMultiplier - fixedCosts = targetCF
+  // rentMultiplier already accounts for vacancy and mgmt scaling with rent
+  const breakEvenRentFor10CoC    = rentMultiplier > 0
+    ? Math.round((fixedCosts + targetCF) / rentMultiplier / 25) * 25
+    : Math.round((fixedCosts + targetCF) / 25) * 25;
   const fmtMo                    = n => `$${Math.round(Math.abs(n)).toLocaleString()}`;
   const holdLabel                = `${holdYrs}-Yr`;
 

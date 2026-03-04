@@ -9,9 +9,12 @@
  */
 
 import { getMarketData } from '../../lib/marketData.js';
+import { rateLimit } from '../../lib/rateLimit.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+  if (!rateLimit(req, { max: 30, windowMs: 60_000 })) return res.status(429).json({ error: 'Too many requests. Please wait a minute.' });
+
 
   try {
     const md = await getMarketData();

@@ -33,7 +33,7 @@ export function RentControlBadge({data}) {
           {rc.justCauseEviction && <span style={{marginLeft:6,fontSize:12,color:C.amber,fontWeight:600}}>· Just cause eviction required</span>}
         </div>
         <div style={{fontSize:12,color:C.muted,lineHeight:1.5,marginBottom:4}}>{rc.exemptions}</div>
-        <div style={{fontSize:11,color:C.muted}}>Source: {rc.source}</div>
+        <div style={{fontSize:11,color:C.muted}}>Source: {rc.source} · Data as of 2025-Q1 · Verify with local housing authority</div>
       </div>
     </div>
   );

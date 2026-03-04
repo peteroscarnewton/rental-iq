@@ -15,6 +15,7 @@
  */
 
 import { fetchSafmrRent }  from '../../lib/marketBenchmarkFetcher.js';
+import { rateLimit } from '../../lib/rateLimit.js';
 import { getSupabaseAdmin } from '../../lib/supabase.js';
 
 export const config = { api: { bodyParser: false }, maxDuration: 10 };
@@ -23,6 +24,8 @@ const CACHE_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 365 days — HUD SAFMR annual
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
+  if (!rateLimit(req, { max: 30, windowMs: 60_000 })) return res.status(429).json({ error: 'Too many requests. Please wait a minute.' });
+
 
   const { zip, beds } = req.query;
   if (!zip || !/^\d{5}$/.test(zip)) return res.status(400).json({ error: 'valid 5-digit zip required' });

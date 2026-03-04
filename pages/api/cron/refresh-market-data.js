@@ -40,6 +40,14 @@ import {
 import { fetchInsuranceRates }        from '../../../lib/insuranceRateFetcher.js';
 import { fetchStrData }               from '../../../lib/strDataFetcher.js';
 import { fetchClimateRisk }           from '../../../lib/climateRiskFetcher.js';
+// Phase 9 — Auto-heal fetchers (replaces all static tables)
+import { fetchStateTaxRates }         from '../../../lib/taxRateFetcher.js';
+import { fetchLandlordLaws }          from '../../../lib/landlordLawFetcher.js';
+import { fetchStrRegulations }        from '../../../lib/strRegFetcher.js';
+import { fetchComputedCapRates }      from '../../../lib/capRateComputedFetcher.js';
+import { fetchRentControlData }       from '../../../lib/rentControlFetcher.js';
+import { fetchClosingCostLive }       from '../../../lib/closingCostLiveFetcher.js';
+import { fetchMgmtFeeLive }           from '../../../lib/mgmtFeeLiveFetcher.js';
 
 // Inline fallback wrappers — call primary, attach sourceUsed, return null on failure.
 // logFallbackUsage writes a record to market_data_cache so the health-check can see fallback events.
@@ -96,6 +104,14 @@ const TTL = {
   state_ins_rates_live:  365 * 24 * 60 * 60 * 1000,  // 1 year  (NAIC annual + III live)
   str_data:               90 * 24 * 60 * 60 * 1000,  // 90 days (Inside Airbnb quarterly)
   climate_risk:          365 * 24 * 60 * 60 * 1000,  // 1 year  (FEMA NRI annual)
+  // Phase 9 — Auto-heal TTLs
+  state_tax_rates_live:  365 * 24 * 60 * 60 * 1000,  // 1 year  (Census ACS annual release)
+  landlord_laws_live:     30 * 24 * 60 * 60 * 1000,  // 30 days (laws can change any time)
+  str_regulations_live:   90 * 24 * 60 * 60 * 1000,  // 90 days (quarterly check)
+  computed_cap_rates:     90 * 24 * 60 * 60 * 1000,  // 90 days (Census ACS + HUD quarterly)
+  rent_control_db_live:   30 * 24 * 60 * 60 * 1000,  // 30 days (ordinances change often)
+  closing_costs_live:    365 * 24 * 60 * 60 * 1000,  // 1 year  (transfer taxes are annual)
+  mgmt_fee_rates_live:   365 * 24 * 60 * 60 * 1000,  // 1 year  (adjust with CPI)
 };
 
 // Baseline values — used to seed the DB on first run and as fallback on write
@@ -159,7 +175,7 @@ export default async function handler(req, res) {
   // Verify cron secret — prevents unauthorized triggering
   const authHeader = req.headers.authorization;
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -903,6 +919,139 @@ export default async function handler(req, res) {
     if (climateErrors.length > 0) errors.push({ key: 'climate_risk', error: `${climateErrors.length} counties failed` });
   } else {
     skipped.push('climate_risk (within TTL)');
+  }
+
+  // ── Phase 9: Auto-Heal — Live replacements for all static tables ─────────
+  //
+  // These fetchers replace the "seed static table every N days" pattern with
+  // genuine live data. Each has a robust fallback: if the live fetch fails,
+  // the existing cache entry (from a prior successful fetch) stays in place.
+  // The static baseline is only used on cold-start before any cron has run.
+
+  // Phase 9A: State property tax rates — Census ACS5 (annual)
+  if (await needsRefresh('state_tax_rates_live')) {
+    try {
+      const taxRates = await fetchStateTaxRates();
+      if (taxRates) {
+        const ok = await upsert('state_tax_rates', taxRates, TTL.state_tax_rates_live);
+        if (ok) refreshed.push('state_tax_rates (Census ACS live)');
+      } else {
+        skipped.push('state_tax_rates_live (Census ACS unavailable — keeping existing cache)');
+      }
+    } catch (e) {
+      errors.push({ key: 'state_tax_rates_live', error: e.message });
+    }
+  } else {
+    skipped.push('state_tax_rates_live (within TTL)');
+  }
+
+  // Phase 9B: Landlord laws — Eviction Lab + NCSL (monthly)
+  if (await needsRefresh('landlord_laws_live')) {
+    try {
+      const laws = await fetchLandlordLaws();
+      if (laws) {
+        const ok = await upsert('landlord_laws', laws, TTL.landlord_laws_live);
+        if (ok) refreshed.push('landlord_laws (Eviction Lab live)');
+      } else {
+        skipped.push('landlord_laws_live (live fetch failed — keeping existing cache)');
+      }
+    } catch (e) {
+      errors.push({ key: 'landlord_laws_live', error: e.message });
+    }
+  } else {
+    skipped.push('landlord_laws_live (within TTL)');
+  }
+
+  // Phase 9C: STR regulations — NMHC preemption tracker + city pages (quarterly)
+  if (await needsRefresh('str_regulations_live')) {
+    try {
+      const strRegs = await fetchStrRegulations();
+      if (strRegs) {
+        const ok = await upsert('str_regulations', strRegs, TTL.str_regulations_live);
+        if (ok) refreshed.push('str_regulations (NMHC live)');
+      } else {
+        skipped.push('str_regulations_live (live fetch failed — keeping existing cache)');
+      }
+    } catch (e) {
+      errors.push({ key: 'str_regulations_live', error: e.message });
+    }
+  } else {
+    skipped.push('str_regulations_live (within TTL)');
+  }
+
+  // Phase 9D: Cap rates — computed from Census ACS + HUD SAFMR (quarterly)
+  if (await needsRefresh('computed_cap_rates')) {
+    try {
+      // Get latest HVS vacancy for accurate computation
+      let vacancyRate = 0.055; // national fallback
+      try {
+        const hvs = await db.from('market_data_cache').select('value').eq('key', 'hvs_vacancy').single();
+        if (hvs?.data?.value?.national) vacancyRate = hvs.data.value.national / 100;
+      } catch {}
+
+      const capRates = await fetchComputedCapRates(fetchSafmrRent, vacancyRate);
+      if (capRates) {
+        const ok = await upsert('market_cap_rates', capRates, TTL.computed_cap_rates);
+        if (ok) refreshed.push('market_cap_rates (computed live)');
+      } else {
+        skipped.push('computed_cap_rates (computation failed — keeping existing cache)');
+      }
+    } catch (e) {
+      errors.push({ key: 'computed_cap_rates', error: e.message });
+    }
+  } else {
+    skipped.push('computed_cap_rates (within TTL)');
+  }
+
+  // Phase 9E: Rent control database — NLIHC + Eviction Lab (monthly)
+  if (await needsRefresh('rent_control_db_live')) {
+    try {
+      const rcData = await fetchRentControlData();
+      if (rcData) {
+        const ok = await upsert('rent_control_db', rcData, TTL.rent_control_db_live);
+        if (ok) refreshed.push('rent_control_db (NLIHC live)');
+      } else {
+        skipped.push('rent_control_db_live (live fetch failed — keeping existing cache)');
+      }
+    } catch (e) {
+      errors.push({ key: 'rent_control_db_live', error: e.message });
+    }
+  } else {
+    skipped.push('rent_control_db_live (within TTL)');
+  }
+
+  // Phase 9F: Closing costs — Tax Foundation transfer tax data (annual)
+  if (await needsRefresh('closing_costs_live')) {
+    try {
+      const closingCosts = await fetchClosingCostLive();
+      if (closingCosts) {
+        const ok = await upsert('state_closing_costs', closingCosts, TTL.closing_costs_live);
+        if (ok) refreshed.push('state_closing_costs (Tax Foundation live)');
+      } else {
+        skipped.push('closing_costs_live (Tax Foundation unavailable — keeping existing cache)');
+      }
+    } catch (e) {
+      errors.push({ key: 'closing_costs_live', error: e.message });
+    }
+  } else {
+    skipped.push('closing_costs_live (within TTL)');
+  }
+
+  // Phase 9G: Management fee rates — NARPM + housing CPI (annual)
+  if (await needsRefresh('mgmt_fee_rates_live')) {
+    try {
+      const mgmtFees = await fetchMgmtFeeLive();
+      if (mgmtFees) {
+        const ok = await upsert('mgmt_fee_rates', mgmtFees, TTL.mgmt_fee_rates_live);
+        if (ok) refreshed.push('mgmt_fee_rates (NARPM live)');
+      } else {
+        skipped.push('mgmt_fee_rates_live (live fetch failed — keeping existing cache)');
+      }
+    } catch (e) {
+      errors.push({ key: 'mgmt_fee_rates_live', error: e.message });
+    }
+  } else {
+    skipped.push('mgmt_fee_rates_live (within TTL)');
   }
 
   // ── Response ──────────────────────────────────────────────────────────────

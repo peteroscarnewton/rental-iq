@@ -97,12 +97,6 @@ export const authOptions = {
     }),
   ],
 
-  pages: {
-    signIn:  '/auth',
-    signOut: '/auth',
-    error:   '/auth',
-  },
-
   callbacks: {
     async signIn({ user, account }) {
       try {
@@ -145,8 +139,9 @@ export const authOptions = {
   session: { strategy: 'jwt' },
   secret:  process.env.NEXTAUTH_SECRET,
   pages: {
-    signIn: '/auth',
-    error:  '/auth',   // OAuth/callback errors redirect to our branded page with ?error=
+    signIn:  '/auth',
+    signOut: '/auth',
+    error:   '/auth',  // OAuth/callback errors redirect to our branded page with ?error=
   },
 };
 

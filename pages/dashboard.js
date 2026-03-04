@@ -211,9 +211,9 @@ export default function Dashboard() {
   useEffect(() => {
     if (status !== 'authenticated') return;
     fetch('/api/deals/list')
-      .then(r => r.json())
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(d => { setDeals(d.deals || []); setDealsLoading(false); })
-      .catch(() => setDealsLoading(false));
+      .catch(status => { setDeals([]); setDealsLoading(false); if (status === 401) router.replace('/auth'); });
 
     // Fetch referral code + stats in parallel
     fetch('/api/user/profile')

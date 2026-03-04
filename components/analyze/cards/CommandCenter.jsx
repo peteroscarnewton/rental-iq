@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
-import { C, clamp, scoreColor } from '../tokens';
-import { Label, Card, Pill, AnimatedBar } from '../InputComponents';
-import { InlineEdit } from '../InputComponents';
+import { C, clamp, scoreColor, VERDICT_CFG } from '../tokens';
+import { Label, Card, Pill, AnimatedBar, InlineEdit, NewAnalysisBtn } from '../InputComponents';
 
 export function CommandCenter({data, onRecalc, onReset, onRerunAI, isEdited}) {
   const freshness = data._marketFreshness || {};
@@ -20,7 +19,8 @@ export function CommandCenter({data, onRecalc, onReset, onRerunAI, isEdited}) {
 
   function edit(key,val) { onRecalc({[key]:val}); }
 
-  const scoreColor = score>=70?C.green:score>=50?C.amber:C.red;
+  // scoreColor imported from tokens — score>=70 green, >=45 amber, else red (consistent with all other cards)
+  const scoreColorValue = scoreColor(score);
 
   return (
     <div style={{background:C.white,border:`1px solid ${C.border}`,borderRadius:14,padding:'32px 28px 24px',marginBottom:14,boxShadow:C.shadow,borderLeft:`4px solid ${vc.color}`}}>
@@ -45,7 +45,7 @@ export function CommandCenter({data, onRecalc, onReset, onRerunAI, isEdited}) {
           {/* Score - secondary, below the reset */}
           <div style={{textAlign:'right'}}>
             <div style={{fontSize:10,color:C.muted,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:2}}>RentalIQ Score</div>
-            <div style={{fontSize:30,fontWeight:700,color:scoreColor,lineHeight:1}}>{score}<span style={{fontSize:14,color:C.muted,fontWeight:400}}>/100</span></div>
+            <div style={{fontSize:30,fontWeight:700,color:scoreColorValue,lineHeight:1}}>{score}<span style={{fontSize:14,color:C.muted,fontWeight:400}}>/100</span></div>
           </div>
         </div>
       </div>

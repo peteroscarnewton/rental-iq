@@ -14,6 +14,7 @@ export default async function handler(req, res) {
   }
 
   const { id } = req.query;
+  if (!id) return res.status(400).json({ error: 'Missing deal id' });
 
   // -- DELETE ----------------------------------------------------------------
   if (req.method === 'DELETE') {
@@ -48,8 +49,6 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Failed to update deal' });
     }
   }
-
-  if (!id) return res.status(400).json({ error: 'Missing deal id' });
 
   try {
     const db = getSupabaseAdmin();

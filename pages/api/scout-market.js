@@ -326,12 +326,7 @@ Format as JSON:
 
     // 4. Deduct token if authenticated
     if (session?.user?.id) {
-      await db
-        .from('users')
-        .update({ tokens: db.rpc ? undefined : undefined }) // handled by RPC below
-        .eq('id', session.user.id);
-
-      // Use decrement RPC if available, otherwise manual
+      // Use decrement RPC if available, otherwise manual fallback
       await db.rpc('decrement_tokens', { user_id: session.user.id, amount: 1 }).catch(async () => {
         const { data: u } = await db.from('users').select('tokens').eq('id', session.user.id).single();
         if (u) await db.from('users').update({ tokens: Math.max(0, u.tokens - 1) }).eq('id', session.user.id);
