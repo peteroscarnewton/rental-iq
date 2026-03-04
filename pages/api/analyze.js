@@ -1,4 +1,5 @@
 import { rateLimitWithAuth }  from "../../lib/rateLimit.js";
+import { authOptions }        from './auth/[...nextauth]';
 import { getMarketData, stateTaxRate, stateInsRate, cityAppreciation,
          getEmploymentData, getCaseShillerData,
          getTreasuryYield, getSP500Return, getPmiRate, getMonthlyPmi, getClosingCostPct, getZoriForCity,
@@ -210,8 +211,6 @@ export default async function handler(req, res) {
   if (!isDemo && process.env.NEXTAUTH_SECRET && process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
     try {
       const { getServerSession }  = await import('next-auth/next');
-      const { authOptions }       = await import('./auth/[...nextauth].js');
-
       const session = await getServerSession(req, res, authOptions);
 
       // Rate limiting
