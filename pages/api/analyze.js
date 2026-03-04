@@ -800,7 +800,7 @@ export default async function handler(req, res) {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const r = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent?key=${apiKey}`,
           { method:'POST', headers:{'content-type':'application/json','x-goog-api-key':apiKey}, body:JSON.stringify(geminiPayload), signal:AbortSignal.timeout(50000) }
         );
         if ((r.status === 429 || r.status === 503) && attempt < 2) {
