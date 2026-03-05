@@ -1,4 +1,25 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+
+// ── Scroll-reveal hook — same pattern as landing page ──────────────────────────
+// Returns [ref, isVisible]. Once visible, stays visible (disconnect after trigger).
+export function useReveal(threshold = 0.08) {
+  const ref = useRef(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Already in viewport on mount (e.g. top of results)
+    const rect = el.getBoundingClientRect();
+    if (rect.top < window.innerHeight - 40) { setVisible(true); return; }
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } },
+      { threshold, rootMargin: '0px 0px -40px 0px' }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [threshold]);
+  return [ref, visible];
+}
 import { C, MODES, MODE_DEFAULTS, LOADING_STEPS, LOAN_TYPES, PROPERTY_TYPES, EMPTY_PROFILE, inputBase, clamp, scoreColor } from './tokens';
 import { getStateTaxRate, getInsRate, getStateAppreciation, getMgmtRateBenchmark, getClosingCostForState, getPmiRateForDown, getMarketData } from './marketHelpers';
 

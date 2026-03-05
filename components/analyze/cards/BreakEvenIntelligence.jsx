@@ -79,7 +79,7 @@ export function BreakEvenIntelligence({data}) {
               </div>
             </div>
             <div style={{
-              fontFamily:\"'Instrument Serif',Georgia,serif\",
+              fontFamily:"'Instrument Serif',Georgia,serif",
               fontSize:22,fontWeight:700,color:item.accent,
               flexShrink:0,textAlign:'right',whiteSpace:'nowrap',
             }}>

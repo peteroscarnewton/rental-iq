@@ -712,9 +712,18 @@ export default function Home() {
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
       </Head>
       <style>{`
-        @keyframes riq-spin   {to{transform:rotate(360deg)}}
-        @keyframes riq-fadeup {from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
-        @keyframes riq-pulse-glow {0%,100%{opacity:1;box-shadow:0 0 8px #4ade80}50%{opacity:0.7;box-shadow:0 0 16px #4ade80,0 0 32px rgba(74,222,128,0.3)}}
+        @keyframes riq-spin      {to{transform:rotate(360deg)}}
+        @keyframes riq-fadeup    {from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes riq-pulse     {0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.45;transform:scale(0.65)}}
+        @keyframes riq-pulse-glow{0%,100%{opacity:1;box-shadow:0 0 8px #4ade80}50%{opacity:0.7;box-shadow:0 0 16px #4ade80,0 0 32px rgba(74,222,128,0.3)}}
+        .riq-reveal{opacity:0;transform:translateY(28px);transition:opacity .6s ease,transform .6s ease}
+        .riq-reveal.riq-up{opacity:1;transform:none}
+        .riq-reveal.riq-d1{transition-delay:.07s}
+        .riq-reveal.riq-d2{transition-delay:.15s}
+        .riq-reveal.riq-d3{transition-delay:.23s}
+        .riq-reveal.riq-d4{transition-delay:.31s}
+        .riq-lift{transition:transform .22s ease,box-shadow .22s ease}
+        .riq-lift:hover{transform:translateY(-4px);box-shadow:0 12px 40px rgba(0,0,0,0.09)!important}
         /* Landing page mobile */
         @media(max-width:640px){
           .riq-proof-grid{grid-template-columns:1fr!important}
@@ -784,6 +793,10 @@ export default function Home() {
           .riq-card{padding:18px 16px!important}
           /* Hero header */
           .riq-hero-header{padding:56px 16px 48px!important}
+        }
+        @media(prefers-reduced-motion:reduce){
+          .riq-reveal{opacity:1!important;transform:none!important;transition:none!important}
+          .riq-lift:hover{transform:none!important}
         }
         @media(max-width:400px){
           .riq-g3{grid-template-columns:1fr!important}
