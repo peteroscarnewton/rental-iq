@@ -811,10 +811,10 @@ export default function Home() {
             </Link>
             <div className="riq-nav-links" style={{display:'flex',alignItems:'center',gap:16}}>
               <div style={{display:'inline-flex',background:C.soft,borderRadius:10,padding:3,gap:3}}>
-                <Link href="/analyze" style={{display:'block',padding:'5px 14px',borderRadius:8,background:C.white,fontSize:12.5,fontWeight:700,color:C.text,boxShadow:C.shadowSm,textDecoration:'none'}}>
+                <Link href="/analyze" style={{display:'block',padding:'5px 14px',borderRadius:8,background:C.white,fontSize:12.5,fontWeight:700,color:C.text,boxShadow:C.shadowSm,textDecoration:'none',whiteSpace:'nowrap'}}>
                   Analyze a Listing
                 </Link>
-                <Link href="/scout" style={{display:'block',padding:'5px 14px',borderRadius:8,fontSize:12.5,fontWeight:600,color:C.muted,textDecoration:'none',transition:'color 0.15s'}}>
+                <Link href="/scout" style={{display:'block',padding:'5px 14px',borderRadius:8,fontSize:12.5,fontWeight:700,color:C.muted,textDecoration:'none',whiteSpace:'nowrap'}}>
                   Market Search
                 </Link>
               </div>
@@ -1005,7 +1005,7 @@ export default function Home() {
           </header>
         )}
 
-        <div ref={formRef} className="riq-page" style={{maxWidth:720,margin:'0 auto',padding:'0 20px 80px'}}>
+        <div ref={formRef} className="riq-page" style={{maxWidth:720,margin:'0 auto',padding:'0 20px 80px',animation:'riq-fadeup 0.5s ease both'}}>
 
           {/* -- Welcome banner (first-time signed-in users) ------------- */}
           {showWelcome && stage==='input' && isAuthed && (
@@ -1111,7 +1111,7 @@ export default function Home() {
             </div>
           )}
 
-          {stage==='loading'&&<div ref={loadingRef}><LoadingSpinner step={step}/></div>}
+          {stage==='loading'&&<div ref={loadingRef} style={{minHeight:'80vh'}}><LoadingSpinner step={step}/></div>}
 
           {stage==='error'&&(
             <div style={{background:C.redBg,border:`1px solid ${C.redBorder}`,borderRadius:18,padding:20,fontSize:14,color:C.red,lineHeight:1.6}}>

@@ -464,12 +464,20 @@ function SearchForm({ onSubmit, prefilledCity }) {
 
   return (
     <Card>
-      <div style={{ marginBottom:22 }}>
-        <div style={{ fontFamily:"'Libre Baskerville',Georgia,serif", fontSize:20, color:C.text, marginBottom:5 }}>
-          Set your investor filters
+      <div style={{ marginBottom:24 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+          <div style={{ width:32, height:32, borderRadius:10, background:C.greenBg,
+            border:`1px solid ${C.greenBorder}`, display:'flex', alignItems:'center',
+            justifyContent:'center', flexShrink:0, fontSize:15 }}>🗺️</div>
+          <div>
+            <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.10em',
+              textTransform:'uppercase', color:C.green }}>Market Scout</div>
+            <div style={{ fontSize:10.5, color:C.muted, marginTop:1 }}>Set filters · Get rent data · Open search</div>
+          </div>
         </div>
-        <div style={{ fontSize:13.5, color:C.muted, lineHeight:1.5 }}>
-          Set your investor filters, then open a pre-filtered Zillow or Redfin search in one click. We'll also pull real HUD + Census rent data for your target market so you know what to expect before you analyze a listing.
+        <div style={{ fontSize:13.5, color:C.muted, lineHeight:1.6 }}>
+          Set your investor filters, then open a pre-filtered search on Zillow and Redfin in one click.
+          We pull real HUD + Census rent data so you know the numbers before analyzing any listing.
         </div>
       </div>
 
@@ -615,8 +623,11 @@ function SearchForm({ onSubmit, prefilledCity }) {
         </div>
 
         <button onClick={handleSubmit}
-          style={{ background:C.green, border:'none', borderRadius:12, padding:'14px', fontSize:14.5, fontWeight:700,
-            color:'#fff', cursor:'pointer', fontFamily:'inherit', width:'100%', letterSpacing:'-0.01em', marginTop:4 }}>
+          style={{ background:C.green, border:'none', borderRadius:12, padding:'15px', fontSize:14.5, fontWeight:700,
+            color:'#fff', cursor:'pointer', fontFamily:'inherit', width:'100%', letterSpacing:'-0.01em', marginTop:8,
+            boxShadow:'0 4px 16px rgba(22,102,56,0.3)', transition:'opacity 0.15s, transform 0.15s' }}
+          onMouseEnter={e=>{e.currentTarget.style.opacity='0.9';e.currentTarget.style.transform='translateY(-1px)'}}
+          onMouseLeave={e=>{e.currentTarget.style.opacity='1';e.currentTarget.style.transform=''}}>
           Find Investment Properties →
         </button>
       </div>
@@ -655,8 +666,9 @@ export default function Scout() {
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
       </Head>
       <style>{`
-        @keyframes spin   { to { transform:rotate(360deg) } }
-        @keyframes fadeup { from { opacity:0;transform:translateY(12px) } to { opacity:1;transform:translateY(0) } }
+        @keyframes spin      { to { transform:rotate(360deg) } }
+        @keyframes fadeup    { from { opacity:0;transform:translateY(16px) } to { opacity:1;transform:translateY(0) } }
+        @keyframes riq-pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.65)} }
         * { box-sizing:border-box }
         input:focus, select:focus { border-color:#2d7a4f!important; outline:none!important }
         @media(max-width:600px) { .scout-mg { grid-template-columns:1fr!important } }
@@ -672,16 +684,17 @@ export default function Scout() {
                 <div style={{ width:8, height:8, background:C.green, borderRadius:'50%' }}/>
                 <span style={{ fontSize:13, fontWeight:700, letterSpacing:'-0.01em', color:C.text }}>RentalIQ</span>
               </Link>
-              <div style={{ display:'inline-flex', background:C.soft, borderRadius:10, padding:3, gap:3, marginLeft:8 }}>
-                <Link href="/analyze" style={{ display:'block', padding:'5px 14px', borderRadius:8, fontSize:12.5, fontWeight:600, color:C.muted, textDecoration:'none' }}>
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:16 }}>
+              <div style={{ display:'inline-flex', background:C.soft, borderRadius:10, padding:3, gap:3 }}>
+                <Link href="/analyze" style={{ display:'block', padding:'5px 14px', borderRadius:8, fontSize:12.5, fontWeight:700, color:C.muted, textDecoration:'none', whiteSpace:'nowrap' }}>
                   Analyze a Listing
                 </Link>
-                <span style={{ display:'block', padding:'5px 14px', borderRadius:8, background:C.white, fontSize:12.5, fontWeight:700, color:C.text, boxShadow:C.shadowSm }}>
+                <span style={{ display:'block', padding:'5px 14px', borderRadius:8, background:C.white, fontSize:12.5, fontWeight:700, color:C.text, boxShadow:C.shadowSm, whiteSpace:'nowrap' }}>
                   Market Search
                 </span>
               </div>
-            </div>
-            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
               {authStatus === 'authenticated' ? (
                 <>
                   <Link href="/dashboard" style={{ fontSize:12, color:C.muted, textDecoration:'none', padding:'5px 12px', border:`1px solid ${C.border}`, borderRadius:8, fontWeight:600, transition:'border-color 0.15s' }}>My Deals</Link>
@@ -694,14 +707,15 @@ export default function Scout() {
                   Sign In
                 </Link>
               )}
+              </div>
             </div>
           </div>
         </nav>
 
-        <div style={{ maxWidth:720, margin:'0 auto', padding:'0 20px 80px' }}>
+        <div style={{ maxWidth:720, margin:'0 auto', padding:'0 20px 80px', animation:'fadeup 0.5s ease both' }}>
 
           {/* Header */}
-          <header style={{ textAlign:'center', padding:'52px 0 36px' }}>
+          <header style={{ textAlign:'center', padding:'52px 0 36px', animation:'fadeup 0.5s ease 0.05s both' }}>
             <div style={{ display:'inline-flex', alignItems:'center', gap:8, marginBottom:14, fontSize:11, fontWeight:600, letterSpacing:'0.12em', color:C.muted, textTransform:'uppercase' }}>
               <div style={{ width:7, height:7, background:C.green, borderRadius:'50%' }}/>
               RentalIQ Scout
@@ -717,7 +731,9 @@ export default function Scout() {
           </header>
 
           {stage === 'form' && (
-            <SearchForm onSubmit={handleSubmitFilters} prefilledCity={prefilledCity} />
+            <div style={{animation:'fadeup 0.5s ease 0.1s both'}}>
+              <SearchForm onSubmit={handleSubmitFilters} prefilledCity={prefilledCity} />
+            </div>
           )}
           {stage === 'results' && filters && (
             <ResultsPanel filters={filters} onBack={() => setStage('form')} />

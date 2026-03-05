@@ -285,7 +285,25 @@ export function Results({data,originalData,scenarioLabel,onReset,onRecalc,onReru
       )}
 
       {/* COMMAND CENTER - dominant */}
-      <CommandCenter data={data} onRecalc={onRecalc} onReset={onReset} onRerunAI={onRerunAI} isEdited={isEdited}/>
+      <div style={{animation:'riq-fadeup 0.4s ease 0.05s both'}}><CommandCenter data={data} onRecalc={onRecalc} onReset={onReset} onRerunAI={onRerunAI} isEdited={isEdited}/></div>
+
+      {/* INVESTMENT ANALYSIS - narrative, right after the verdict */}
+      {data.narrative && (
+        <div style={{background:'linear-gradient(135deg,#f0fdf4 0%,#f7fbff 100%)',border:`1px solid ${C.greenBorder}`,borderRadius:16,padding:'24px 26px',marginBottom:14,animation:'riq-fadeup 0.4s ease both'}}>
+          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
+            <div style={{width:32,height:32,borderRadius:10,background:C.greenBg,border:`1px solid ${C.greenBorder}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M2 4h12M2 8h8M2 12h10" stroke={C.green} strokeWidth="1.6" strokeLinecap="round"/>
+              </svg>
+            </div>
+            <div>
+              <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.10em',textTransform:'uppercase',color:C.green}}>Investment Analysis</div>
+              <div style={{fontSize:10.5,color:C.muted,marginTop:1}}>AI-generated · full context</div>
+            </div>
+          </div>
+          <p style={{fontSize:14.5,lineHeight:1.9,color:C.textBody,margin:0}}>{data.narrative}</p>
+        </div>
+      )}
 
       {/* WHAT WOULD MAKE THIS A YES - only for MAYBE/NO */}
       <BreakEvenIntelligence data={data}/>
@@ -294,10 +312,10 @@ export function Results({data,originalData,scenarioLabel,onReset,onRecalc,onReru
       <DataConfidenceBanner data={data}/>
 
       {/* WEALTH PROJECTION - second most important for Kiyosaki */}
-      <WealthProjection data={data}/>
-      <OpportunityCostPanel data={data} benchmarks={liveBenchmarks}/>
+      <div style={{animation:'riq-fadeup 0.4s ease 0.1s both'}}><WealthProjection data={data}/></div>
+      <div style={{animation:'riq-fadeup 0.4s ease 0.15s both'}}><OpportunityCostPanel data={data} benchmarks={liveBenchmarks}/></div>
 
-      <ScoreBreakdown data={data} isEdited={isEdited}/>
+      <div style={{animation:'riq-fadeup 0.4s ease 0.2s both'}}><ScoreBreakdown data={data} isEdited={isEdited}/></div>
       <ProsAndCons data={data}/>
       <StressPanel data={data}/>
       <RentControlBadge data={data}/>
@@ -315,23 +333,7 @@ export function Results({data,originalData,scenarioLabel,onReset,onRecalc,onReru
       <RentScenarios data={data}/>
       <ExpenseBreakdown data={data}/>
 
-      {data.narrative && (
-        <div style={{background:'linear-gradient(135deg,#f0fdf4 0%,#f7fbff 100%)',border:`1px solid ${C.greenBorder}`,borderRadius:16,padding:'24px 26px',marginBottom:14}}>
-          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
-            <div style={{width:32,height:32,borderRadius:10,background:C.greenBg,border:`1px solid ${C.greenBorder}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M2 4h12M2 8h8M2 12h10" stroke={C.green} strokeWidth="1.6" strokeLinecap="round"/>
-              </svg>
-            </div>
-            <div>
-              <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.10em',textTransform:'uppercase',color:C.green}}>Investment Analysis</div>
-              <div style={{fontSize:10.5,color:C.muted,marginTop:1}}>AI-generated · full context</div>
-            </div>
-          </div>
-          <p style={{fontSize:14.5,lineHeight:1.9,color:C.textBody,margin:0}}>{data.narrative}</p>
-        </div>
-      )}
-
+      
       {/* -- Demo gate - premium features banner for unauthed users -- */}
       {!isAuthed && demoUsed && (
         <div style={{background:'linear-gradient(135deg,#0d1512 0%,#0a1520 100%)',border:'1px solid rgba(74,222,128,0.2)',borderRadius:18,padding:'22px 24px',marginBottom:14,display:'flex',alignItems:'center',justifyContent:'space-between',gap:16,flexWrap:'wrap',position:'relative',overflow:'hidden'}}>

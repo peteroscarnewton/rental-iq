@@ -63,13 +63,34 @@ export function AnimatedBar({ score, delay=0 }) {
 
 export function LoadingSpinner({ step }) {
   return (
-    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', padding:'60px 0', gap:20 }}>
-      <div style={{ width:40, height:40, borderRadius:'50%', border:`3px solid ${C.border}`, borderTopColor:'#4ade80', animation:'riq-spin 0.8s linear infinite' }}/>
-      <ul style={{ listStyle:'none', textAlign:'center', padding:0, margin:0 }}>
+    <div style={{
+      position:'fixed', inset:0, zIndex:50,
+      display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+      background:'rgba(245,245,248,0.96)', backdropFilter:'blur(8px)',
+      gap:28, animation:'riq-fadeup 0.3s ease both',
+    }}>
+      {/* Double-ring spinner */}
+      <div style={{ position:'relative', width:56, height:56 }}>
+        <div style={{ position:'absolute', inset:0, borderRadius:'50%', border:`3px solid ${C.border}` }}/>
+        <div style={{ position:'absolute', inset:0, borderRadius:'50%', border:'3px solid transparent', borderTopColor:C.green, animation:'riq-spin 0.8s linear infinite' }}/>
+        <div style={{ position:'absolute', inset:6, borderRadius:'50%', border:'2px solid transparent', borderTopColor:C.greenBorder, animation:'riq-spin 1.2s linear infinite reverse' }}/>
+      </div>
+      {/* Step list */}
+      <div style={{ textAlign:'center', maxWidth:360, padding:'0 24px' }}>
         {LOADING_STEPS.map((s, i) => (
-          <li key={i} style={{ fontSize:14, color:i===step ? C.text : '#ccc', transition:'color 0.4s', padding:'3px 0', fontWeight:i===step ? 600 : 400 }}>{s}</li>
+          <div key={i} style={{
+            fontSize:13.5,
+            color: i < step ? C.muted : i === step ? C.text : C.border,
+            transition:'color 0.5s ease',
+            padding:'5px 0',
+            fontWeight: i === step ? 700 : 400,
+            lineHeight:1.5,
+          }}>
+            {i < step ? <span style={{color:C.green,marginRight:6}}>✓</span> : i === step ? <span style={{marginRight:6}}>›</span> : <span style={{marginRight:6,opacity:0.3}}>·</span>}
+            {s}
+          </div>
         ))}
-      </ul>
+      </div>
     </div>
   );
 }
