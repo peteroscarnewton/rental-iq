@@ -10,8 +10,6 @@ export function STRRegBadge({data}) {
   const color        = isBanned ? C.red : C.amber;
   const bg           = isBanned ? C.redBg : C.amberBg;
   const border       = isBanned ? C.redBorder : C.amberBorder;
-  const icon         = isBanned ? '🚫' : '⚠️';
-
   return (
     <div style={{
       background: bg,
@@ -23,7 +21,6 @@ export function STRRegBadge({data}) {
       alignItems: 'flex-start',
       gap: 10,
     }}>
-      <span style={{fontSize: 16, flexShrink: 0, marginTop: 1}}>{icon}</span>
       <div style={{flex: 1, minWidth: 0}}>
         <div style={{fontSize: 11, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 3}}>
           STR {isBanned ? 'Banned' : 'Restricted'} — {reg.source?.split('(')[0]?.trim() || 'local ordinance'}

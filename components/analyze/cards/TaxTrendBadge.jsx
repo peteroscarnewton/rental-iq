@@ -24,7 +24,7 @@ export function TaxTrendBadge({data}) {
       alignItems: 'flex-start',
       gap: 10,
     }}>
-      <span style={{fontSize: 16, flexShrink: 0, marginTop: 1}}>{isRising ? '📈' : '🔒'}</span>
+      
       <div style={{flex: 1, minWidth: 0}}>
         <div style={{fontSize: 11, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 3}}>
           Property Tax — {tt.stateCode} {isRising ? 'Rising Trend' : 'Assessment Cap'}

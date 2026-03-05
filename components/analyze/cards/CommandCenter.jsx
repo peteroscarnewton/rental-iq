@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { C, clamp, scoreColor, VERDICT_CFG } from '../tokens';
+import { calcMonthlyMortgage } from '../marketHelpers';
 import { Label, Card, AnimatedBar, InlineEdit, NewAnalysisBtn } from '../InputComponents';
 
 function Counter({ to, duration = 1200 }) {
@@ -132,16 +133,51 @@ export function CommandCenter({ data, onRecalc, onReset, onRerunAI, isEdited }) 
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20, alignItems: 'flex-end' }}>
             {[
-              { label: 'Price',     val: price,                              onChange: v => edit('price', v),           prefix: '$' },
-              { label: 'Rent / mo', val: rent,                               onChange: v => edit('rent', v),            prefix: '$' },
+              { label: 'Price',     val: price,                                  onChange: v => edit('price', v),           prefix: '$' },
+              { label: 'Rent / mo', val: rent,                                   onChange: v => edit('rent', v),            prefix: '$' },
               ...(!s.cashPurchase ? [
-                { label: 'Down',   val: String(s.downPaymentPct || 20),      onChange: v => edit('downPaymentPct', v),  suffix: '%' },
-                { label: 'Rate',   val: String(s.interestRate   || 6.99),    onChange: v => edit('interestRate', v),    suffix: '%' },
+                { label: 'Down',      val: String(s.downPaymentPct || 20),       onChange: v => edit('downPaymentPct', v),  suffix: '%' },
+                { label: 'Rate',      val: String(s.interestRate   || 6.99),     onChange: v => edit('interestRate', v),    suffix: '%' },
+                {
+                  label: 'Mortgage',
+                  val: String(Math.round(calcMonthlyMortgage(
+                    parseFloat(price) || 0,
+                    parseFloat(s.downPaymentPct) || 20,
+                    parseFloat(s.interestRate)   || 6.99,
+                    s.loanType
+                  ))),
+                  onChange: v => {
+                    // Back-solve: user sets desired payment → derive the implied interest rate
+                    // P&I = principal * (r(1+r)^n) / ((1+r)^n - 1)
+                    // We solve numerically (bisection) for r given the target payment.
+                    const pmt     = parseFloat(v);
+                    const p       = parseFloat(price) || 0;
+                    const d       = parseFloat(s.downPaymentPct) || 20;
+                    const loanAmt = p * (1 - d / 100);
+                    const n       = (s.loanType === '15yr_fixed' ? 15 : 30) * 12;
+                    if (!pmt || !loanAmt || s.loanType === 'interest_only') return;
+                    // Bisection for monthly rate r in [0.001%, 3%]
+                    let lo = 0.00001, hi = 0.03, r = 0.005;
+                    for (let i = 0; i < 60; i++) {
+                      r = (lo + hi) / 2;
+                      const calc = loanAmt * (r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
+                      if (Math.abs(calc - pmt) < 0.01) break;
+                      if (calc > pmt) hi = r; else lo = r;
+                    }
+                    const annualRate = Math.round(r * 12 * 10000) / 100; // 2dp %
+                    edit('interestRate', String(annualRate));
+                  },
+                  prefix: '$',
+                  note: 'P&I · avg credit',
+                },
               ] : []),
-              { label: 'Tax rate',  val: String((s.taxRate || 1.1).toFixed(2)), onChange: v => edit('taxRate', v),    suffix: '%/yr' },
-            ].map(({ label, val, onChange, prefix, suffix }) => (
+              { label: 'Tax rate',  val: String((s.taxRate || 1.1).toFixed(2)),  onChange: v => edit('taxRate', v),    suffix: '%/yr' },
+            ].map(({ label, val, onChange, prefix, suffix, note }) => (
               <div key={label}>
-                <div style={{ fontSize: 10, color: C.muted, marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                  {label}
+                  {note && <span style={{ fontSize: 9.5, textTransform: 'none', letterSpacing: 0, marginLeft: 4, fontWeight: 400 }}>{note}</span>}
+                </div>
                 <InlineEdit value={val} onChange={onChange} prefix={prefix} suffix={suffix} large={false} />
               </div>
             ))}

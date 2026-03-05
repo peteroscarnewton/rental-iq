@@ -49,7 +49,7 @@ export function NeighborhoodCard({ data, loading, schoolData }) {
   const scoreColor = s => s === null ? C.muted : s >= 7 ? C.green : s >= 4 ? C.amber : C.red;
   const scoreLabel = s => s === null ? '-' : s >= 7 ? 'High' : s >= 4 ? 'Moderate' : 'Low';
   const tempColor  = t => t === 'hot' ? C.red : t === 'warm' ? C.amber : t === 'cool' ? C.blue : t === 'cold' ? C.blue : C.muted;
-  const tempLabel  = t => ({ hot: '🔥 Hot', warm: '📈 Warm', neutral: '➡️ Neutral', cool: '📉 Cool', cold: '❄️ Cold' })[t] || t;
+  const tempLabel  = t => ({ hot: 'Hot', warm: 'Warm', neutral: 'Neutral', cool: 'Cool', cold: 'Cold' })[t] || t;
   const trendColor = t => t === 'accelerating' ? C.green : t === 'decelerating' ? C.amber : C.muted;
   const trendArrow = t => t === 'accelerating' ? '↗' : t === 'decelerating' ? '↘' : '→';
 
@@ -111,7 +111,7 @@ export function NeighborhoodCard({ data, loading, schoolData }) {
       {pulse && (
         <div style={{ background: C.soft, borderRadius: 10, padding: '14px 16px', marginBottom: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>📊 Market Pulse</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>Market Pulse</div>
             <div style={{ fontSize: 10, color: C.muted }}>Redfin · {pulse.asOf || 'weekly'}</div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
@@ -126,7 +126,7 @@ export function NeighborhoodCard({ data, loading, schoolData }) {
       {history && (
         <div style={{ background: C.soft, borderRadius: 10, padding: '14px 16px', marginBottom: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>🏠 Home Price Trend</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>Home Price Trend</div>
             <div style={{ fontSize: 10, color: C.muted }}>Case-Shiller{history.metro ? ` · ${history.metro}` : ''}</div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
@@ -154,9 +154,9 @@ export function NeighborhoodCard({ data, loading, schoolData }) {
 
       {amenities && amenities.total !== undefined && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 8 }}>
-          {[{ label: 'Grocery', val: amenities.grocery, icon: '🛒' }, { label: 'Transit', val: amenities.transit, icon: '🚌' }, { label: 'Dining', val: amenities.restaurants, icon: '🍽' }, { label: 'Parks', val: amenities.parks, icon: '🌳' }, { label: 'Schools', val: amenities.schools, icon: '🏫' }].map(({ label, val, icon }) => (
+          {[{ label: 'Grocery', val: amenities.grocery, icon: 'G' }, { label: 'Transit', val: amenities.transit, icon: 'T' }, { label: 'Dining', val: amenities.restaurants, icon: 'D' }, { label: 'Parks', val: amenities.parks, icon: 'P' }, { label: 'Schools', val: amenities.schools, icon: 'S' }].map(({ label, val, icon }) => (
             <div key={label} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, padding: '8px 6px', textAlign: 'center' }}>
-              <div style={{ fontSize: 16, marginBottom: 3 }}>{icon}</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, marginBottom: 3 }}>{icon}</div>
               <div style={{ fontSize: 13, fontWeight: 700, color: val > 0 ? C.text : C.muted }}>{val ?? '-'}</div>
               <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.3 }}>{label}</div>
             </div>
@@ -281,18 +281,20 @@ export function Results({
         <div className="riq-lift"><WealthProjection data={data} /></div>
       </Reveal>
 
-      {/* Row 2: Opportunity Cost + Score Breakdown side-by-side */}
+      {/* Row 2: Opportunity Cost — full width (may return null; must not share grid with ScoreBreakdown) */}
       <Reveal>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 0 }} className="riq-g2">
-          <div className="riq-lift"><OpportunityCostPanel data={data} benchmarks={liveBenchmarks} /></div>
-          <div className="riq-lift"><ScoreBreakdown data={data} isEdited={isEdited} /></div>
-        </div>
+        <div className="riq-lift"><OpportunityCostPanel data={data} benchmarks={liveBenchmarks} /></div>
       </Reveal>
 
-      {/* Row 3: Pros/Cons (already side-by-side internally) */}
+      {/* Row 3a: Score Breakdown — full width so ring never overflows and bars always have room */}
+      <Reveal>
+        <div className="riq-lift"><ScoreBreakdown data={data} isEdited={isEdited} /></div>
+      </Reveal>
+
+      {/* Row 4: Pros/Cons (already side-by-side internally) */}
       <Reveal delay="riq-d1"><ProsAndCons data={data} /></Reveal>
 
-      {/* Row 4: Expense Breakdown + NOI side-by-side */}
+      {/* Row 5: Expense Breakdown + NOI side-by-side */}
       <Reveal delay="riq-d1">
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }} className="riq-g2">
           <div className="riq-lift"><ExpenseBreakdown data={data} /></div>
@@ -300,10 +302,10 @@ export function Results({
         </div>
       </Reveal>
 
-      {/* Row 5: Key Metrics grid */}
+      {/* Row 6: Key Metrics grid */}
       <Reveal delay="riq-d2"><KeyMetrics data={data} /></Reveal>
 
-      {/* Row 6: Rent Scenarios + Stress Panel side-by-side */}
+      {/* Row 7: Rent Scenarios + Stress Panel side-by-side */}
       <Reveal delay="riq-d2">
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }} className="riq-g2">
           <div className="riq-lift"><RentScenarios data={data} /></div>
@@ -332,7 +334,7 @@ export function Results({
           onMouseLeave={e => { e.currentTarget.style.borderColor = ddOpen ? C.text : C.border; if (!ddOpen) e.currentTarget.style.boxShadow = 'none'; }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 9, background: C.soft, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, flexShrink: 0 }}>🔬</div>
+            <div style={{ width: 32, height: 32, borderRadius: 9, background: C.soft, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke={C.muted} strokeWidth="1.4"/><path d="M7 4.5v3M7 9.5v.5" stroke={C.muted} strokeWidth="1.4" strokeLinecap="round"/></svg></div>
             <div style={{ textAlign: 'left' }}>
               <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text }}>Full Due Diligence</div>
               <div style={{ fontSize: 12, color: C.muted, marginTop: 1 }}>Neighborhood · Flood · Climate · STR · Market benchmarks · Tax trends</div>
@@ -376,8 +378,8 @@ export function Results({
               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'rgba(74,222,128,0.6)', marginBottom: 6 }}>Unlock premium features</div>
               <div style={{ fontSize: 15, fontWeight: 700, color: '#fff', marginBottom: 10, lineHeight: 1.3 }}>Save, export, and dig deeper into this deal</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {[{ icon: '↓', label: 'PDF Export' }, { icon: '🔗', label: 'Share Link' }, { icon: '💬', label: 'AI Chat' }, { icon: '📁', label: 'Deal History' }].map(({ icon, label }) => (
-                  <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.2)', borderRadius: 8, padding: '4px 11px', fontSize: 12, color: 'rgba(74,222,128,0.8)', fontWeight: 600 }}>{icon} {label}</span>
+                {[{ label: 'PDF Export' }, { label: 'Share Link' }, { label: 'AI Chat' }, { label: 'Deal History' }].map(({ icon, label }) => (
+                  <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.2)', borderRadius: 8, padding: '4px 11px', fontSize: 12, color: 'rgba(74,222,128,0.8)', fontWeight: 600 }}>{label}</span>
                 ))}
               </div>
             </div>

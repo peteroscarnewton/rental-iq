@@ -21,12 +21,8 @@ export function FloodRiskCard({data: floodData, loading}) {
     undetermined:  C.muted,
     unknown:       C.muted,
   };
-  const riskIcons = {
-    very_high: '🌊', high: '⚠️', moderate: '🌧', low: '✅', undetermined: '❓', unknown: '❓',
-  };
 
   const color     = riskColors[floodData.riskLevel] || C.muted;
-  const icon      = riskIcons[floodData.riskLevel]  || '❓';
   const isHighRisk = floodData.riskLevel === 'high' || floodData.riskLevel === 'very_high';
   const bgColor    = isHighRisk ? C.red + '10' : floodData.riskLevel === 'moderate' ? C.amber + '10' : C.soft;
   const borderColor = isHighRisk ? C.red + '40' : floodData.riskLevel === 'moderate' ? C.amber + '40' : C.border;
@@ -38,7 +34,6 @@ export function FloodRiskCard({data: floodData, loading}) {
         <span style={{fontSize:11,color:C.muted}}>{floodData.source}</span>
       </div>
       <div style={{display:'flex',alignItems:'flex-start',gap:14}}>
-        <div style={{fontSize:28,lineHeight:1,flexShrink:0}}>{icon}</div>
         <div style={{flex:1}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
             <span style={{fontSize:17,fontWeight:800,color,letterSpacing:'-0.02em'}}>{floodData.label}</span>

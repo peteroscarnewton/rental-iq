@@ -87,8 +87,8 @@ export function ShareToolbar({data, dealId}) {
             : shareErr
             ? <>{shareErr}</>
             : shareUrl
-            ? <>🔗 Copy link</>
-            : <>🔗 Share</>}
+            ? <>Copy link</>
+            : <>Share</>}
         </button>
 
         {/* Revoke link - shown once share is active */}

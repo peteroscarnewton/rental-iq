@@ -32,7 +32,7 @@ export function STRDataCard({data: strData, loading, analysisData}) {
 
       {isBanned ? (
         <div style={{background: C.redBg, border: `1px solid ${C.redBorder}`, borderRadius: 10, padding: '12px 16px', fontSize: 13, color: C.red}}>
-          🚫 <strong>STR not permitted</strong> — {reg.detail}
+          <strong>STR not permitted</strong> — {reg.detail}
         </div>
       ) : (
         <div style={{display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: strData.estimated ? 10 : 0}} className="riq-g3">

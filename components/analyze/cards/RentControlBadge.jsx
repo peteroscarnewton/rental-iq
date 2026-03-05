@@ -23,7 +23,6 @@ export function RentControlBadge({data}) {
       alignItems:'flex-start',
       gap:12,
     }}>
-      <span style={{fontSize:20,flexShrink:0,marginTop:1}}>⚠️</span>
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:12,fontWeight:700,color:C.amber,textTransform:'uppercase',letterSpacing:'0.09em',marginBottom:4}}>
           Rent Control Active — {rc.city}, {rc.state}

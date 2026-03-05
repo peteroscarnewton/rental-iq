@@ -932,14 +932,14 @@ export default function Home() {
               <div style={{width:6,height:6,background:C.green,borderRadius:'50%'}}/>
               <span style={{fontSize:11,fontWeight:600,letterSpacing:'0.10em',color:C.muted,textTransform:'uppercase'}}>Free Analysis · No Sign-up Required</span>
             </div>
-            <h1 className="riq-hero-h1" style={{fontFamily:"'Libre Baskerville',Georgia,serif",fontSize:'clamp(36px,5vw,62px)',fontWeight:700,letterSpacing:'-0.03em',lineHeight:1.05,color:C.text,marginBottom:20,animation:'riq-fadeup 0.6s ease 0.05s both'}}>
+            <h1 className="riq-hero-h1" style={{fontFamily:"'Libre Baskerville',Georgia,serif",fontSize:'clamp(40px,5.5vw,68px)',fontWeight:700,letterSpacing:'-0.03em',lineHeight:1.05,color:C.text,marginBottom:20,animation:'riq-fadeup 0.6s ease 0.05s both'}}>
               Does the deal{' '}
               <em style={{fontStyle:'italic',color:C.green,fontWeight:400}}>cash flow?</em>
             </h1>
             <p className="riq-hero-sub" style={{fontSize:17,color:C.muted,lineHeight:1.65,maxWidth:460,margin:'0 auto 36px',fontWeight:400,animation:'riq-fadeup 0.6s ease 0.1s both'}}>
               Paste any listing URL. Get cap rate, cash flow, wealth projection, and a buy/pass verdict in seconds.
             </p>
-            <div className="riq-hero-bar" style={{maxWidth:600,margin:'0 auto',background:C.white,border:`1.5px solid ${fetchStatus==='loading'?C.blue:fetchStatus==='done'?C.green:fetchStatus==='partial'?C.amber:fetchStatus==='error'?C.red:C.border}`,borderRadius:16,boxShadow:fetchStatus==='loading'?`0 0 0 4px rgba(22,73,160,0.10), ${C.shadowLg}`:fetchStatus==='done'?`0 0 0 4px rgba(22,102,56,0.12), ${C.shadowLg}`:fetchStatus==='partial'?`0 0 0 4px rgba(138,88,0,0.10), ${C.shadowLg}`:C.shadowLg,padding:'6px 6px 6px 18px',display:'flex',gap:10,alignItems:'center',transition:'border-color 0.3s, box-shadow 0.3s',animation:'riq-fadeup 0.6s ease 0.15s both'}}>
+            <div className="riq-hero-bar" style={{maxWidth:640,margin:'0 auto',background:C.white,border:`1.5px solid ${fetchStatus==='loading'?C.blue:fetchStatus==='done'?C.green:fetchStatus==='partial'?C.amber:fetchStatus==='error'?C.red:C.border}`,borderRadius:18,boxShadow:fetchStatus==='loading'?`0 0 0 4px rgba(22,73,160,0.10), ${C.shadowLg}`:fetchStatus==='done'?`0 0 0 4px rgba(22,102,56,0.12), ${C.shadowLg}`:fetchStatus==='partial'?`0 0 0 4px rgba(138,88,0,0.10), ${C.shadowLg}`:C.shadowLg,padding:'8px 8px 8px 22px',display:'flex',gap:12,alignItems:'center',transition:'border-color 0.3s, box-shadow 0.3s',animation:'riq-fadeup 0.6s ease 0.15s both'}}>
               <div style={{flexShrink:0,width:18,height:18,display:'flex',alignItems:'center',justifyContent:'center'}}>
                 {fetchStatus==='loading'&&<div style={{width:14,height:14,border:`2px solid ${C.blue}`,borderTopColor:'transparent',borderRadius:'50%',animation:'riq-spin 0.75s linear infinite'}}/>}
                 {fetchStatus==='done'&&<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5L13 5" stroke={C.green} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
@@ -947,7 +947,7 @@ export default function Home() {
                 {fetchStatus==='error'&&<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 5v4M8 11v.5" stroke={C.red} strokeWidth="1.8" strokeLinecap="round"/><circle cx="8" cy="8" r="6.5" stroke={C.red} strokeWidth="1.4"/></svg>}
                 {!fetchStatus&&<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke={C.muted} strokeWidth="1.5"/><path d="M10.5 10.5L13 13" stroke={C.muted} strokeWidth="1.5" strokeLinecap="round"/></svg>}
               </div>
-              <input type="url" value={fields.url} onChange={e=>setField('url')(e.target.value)} placeholder="Paste a Zillow, Redfin, or Realtor.com link to auto-fill..." style={{flex:1,border:'none',outline:'none',fontSize:14.5,padding:'11px 0',background:'transparent',color:C.text,fontFamily:"'DM Sans',system-ui,sans-serif",minWidth:0}}/>
+              <input type="url" value={fields.url} onChange={e=>setField('url')(e.target.value)} placeholder="Paste a Zillow, Redfin, or Realtor.com link to auto-fill..." style={{flex:1,border:'none',outline:'none',fontSize:16,padding:'15px 0',background:'transparent',color:C.text,fontFamily:"'DM Sans',system-ui,sans-serif",minWidth:0}}/>
               {(fetchStatus==='done'||fetchStatus==='partial')&&allRequiredFilled&&<button className="riq-hero-bar-cta" onClick={handleSubmit} disabled={stage==='loading'} style={{background:fetchStatus==='done'?C.green:C.amber,color:'#fff',border:'none',borderRadius:11,padding:'12px 22px',fontSize:13.5,fontWeight:700,cursor:stage==='loading'?'not-allowed':'pointer',fontFamily:"'DM Sans',system-ui,sans-serif",letterSpacing:'-0.01em',whiteSpace:'nowrap',transition:'opacity 0.15s',animation:'riq-fadeup 0.3s ease',display:'flex',alignItems:'center',gap:6,opacity:stage==='loading'?0.7:1}}>{stage==='loading'?<><div style={{width:12,height:12,border:'2px solid rgba(255,255,255,0.4)',borderTopColor:'#fff',borderRadius:'50%',animation:'riq-spin 0.7s linear infinite'}}/>Analyzing...</>:'Analyze →'}</button>}              {(fetchStatus==='done'||fetchStatus==='partial')&&!allRequiredFilled&&<div style={{background:C.soft,borderRadius:11,padding:'12px 20px',fontSize:13,color:C.muted,whiteSpace:'nowrap',flexShrink:0,fontFamily:"'DM Sans',system-ui,sans-serif"}}>fill remaining fields ↓</div>}
               {fetchStatus!=='done'&&fetchStatus!=='partial'&&<div style={{background:C.soft,borderRadius:11,padding:'12px 20px',fontSize:13,color:C.muted,whiteSpace:'nowrap',flexShrink:0,fontFamily:"'DM Sans',system-ui,sans-serif"}}>{fields.price?'fill remaining fields ↓':'or enter manually ↓'}</div>}
             </div>
@@ -1007,7 +1007,7 @@ export default function Home() {
                 {fetchStatus==='error'&&<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 5v4M8 11v.5" stroke={C.red} strokeWidth="1.8" strokeLinecap="round"/><circle cx="8" cy="8" r="6.5" stroke={C.red} strokeWidth="1.4"/></svg>}
                 {!fetchStatus&&<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke={C.muted} strokeWidth="1.5"/><path d="M10.5 10.5L13 13" stroke={C.muted} strokeWidth="1.5" strokeLinecap="round"/></svg>}
               </div>
-              <input type="url" value={fields.url} onChange={e=>setField('url')(e.target.value)} placeholder="Paste a Zillow, Redfin, or Realtor link to auto-fill..." style={{flex:1,border:'none',outline:'none',fontSize:14.5,padding:'10px 0',background:'transparent',color:C.text,fontFamily:"'DM Sans',system-ui,sans-serif",minWidth:0}}/>
+              <input type="url" value={fields.url} onChange={e=>setField('url')(e.target.value)} placeholder="Paste a Zillow, Redfin, or Realtor link to auto-fill..." style={{flex:1,border:'none',outline:'none',fontSize:16,padding:'14px 0',background:'transparent',color:C.text,fontFamily:"'DM Sans',system-ui,sans-serif",minWidth:0}}/>
               {(fetchStatus==='done'||fetchStatus==='partial')&&allRequiredFilled&&<button className="riq-hero-bar-cta" onClick={handleSubmit} disabled={stage==='loading'} style={{background:fetchStatus==='done'?C.green:C.amber,color:'#fff',border:'none',borderRadius:11,padding:'11px 20px',fontSize:13.5,fontWeight:700,cursor:stage==='loading'?'not-allowed':'pointer',fontFamily:"'DM Sans',system-ui,sans-serif",letterSpacing:'-0.01em',whiteSpace:'nowrap',transition:'opacity 0.15s',animation:'riq-fadeup 0.3s ease',display:'flex',alignItems:'center',gap:6,opacity:stage==='loading'?0.7:1}}>{stage==='loading'?<><div style={{width:12,height:12,border:'2px solid rgba(255,255,255,0.4)',borderTopColor:'#fff',borderRadius:'50%',animation:'riq-spin 0.7s linear infinite'}}/>Analyzing...</>:'Analyze →'}</button>}
               {(fetchStatus==='done'||fetchStatus==='partial')&&!allRequiredFilled&&<div style={{background:C.soft,borderRadius:11,padding:'11px 20px',fontSize:13,color:C.muted,whiteSpace:'nowrap',flexShrink:0,fontFamily:"'DM Sans',system-ui,sans-serif"}}>fill remaining fields ↓</div>}
               {fetchStatus!=='done'&&fetchStatus!=='partial'&&<div style={{background:C.soft,borderRadius:11,padding:'11px 20px',fontSize:13,color:C.muted,whiteSpace:'nowrap',flexShrink:0,fontFamily:"'DM Sans',system-ui,sans-serif"}}>{fields.price?'fill remaining fields ↓':'or fill manually below ↓'}</div>}
@@ -1026,8 +1026,8 @@ export default function Home() {
               padding:'20px 22px',marginBottom:16,animation:'riq-fadeup 0.3s ease both',
               display:'flex',alignItems:'flex-start',gap:14}}>
               <div style={{width:36,height:36,borderRadius:10,background:C.greenBg,border:`1px solid ${C.greenBorder}`,
-                flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:17}}>
-                👋
+                flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center'}}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2a6 6 0 100 12A6 6 0 008 2z" stroke={C.green} strokeWidth="1.5"/><path d="M8 5.5v3.5M8 10.5v.5" stroke={C.green} strokeWidth="1.4" strokeLinecap="round"/></svg>
               </div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:14,fontWeight:700,color:C.text,marginBottom:4}}>
@@ -1198,8 +1198,8 @@ export default function Home() {
                 {[
                   {icon:'🔐', text:'Deal history - every analysis auto-saved'},
                   {icon:'📄', text:'PDF export - professional investor memo'},
-                  {icon:'💬', text:'AI chat - ask anything about the deal'},
-                  {icon:'🔗', text:'Share links - send deals to partners'},
+                  {text:'AI chat — ask anything about the deal'},
+                  {text:'Share links — send deals to partners'},
                 ].map((p,i)=>(
                   <div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:10}}>
                     <span style={{fontSize:15,flexShrink:0}}>{p.icon}</span>

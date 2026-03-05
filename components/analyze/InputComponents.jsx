@@ -295,6 +295,18 @@ export function StepSituation({ profile, onChange, selfManage, onSelfManage, isP
 
 export function StepProperty({ fields, setField, errors, adv, setAdv, mode, setMode, fetchStatus, fetchMsg, fieldStatus, profile }) {
   const stateTax = getStateTaxRate(fields.city);
+  // True once URL has been fetched and we have field-level status.
+  // Used to collapse successfully auto-filled fields so the form shows only what needs attention.
+  const urlFetched = (fetchStatus === 'done' || fetchStatus === 'partial') && Object.keys(fieldStatus).length > 0;
+
+  // A field should show if: no URL was used, or it needs attention (fail/unverified/error/empty)
+  function fieldNeedsAttention(key) {
+    if (!urlFetched) return true;
+    const st = fieldStatus[key];
+    if (errors[key]) return true;  // always show when there's a validation error
+    if (st === 'success') return false; // auto-filled cleanly — hide it
+    return true; // fail, unverified, or no status — show it
+  }
   const stateIns = getInsRate(fields.city);
   const m = fields.city.toUpperCase().match(/,\s*([A-Z]{2})$/);
   const sc = m ? m[1] : null;
@@ -346,23 +358,55 @@ export function StepProperty({ fields, setField, errors, adv, setAdv, mode, setM
         </div>
       )}
 
-      {/* Price + Rent */}
+      {/* Auto-filled summary — compact chip row showing values pulled from URL */}
+      {urlFetched && (() => {
+        const autoFilled = [
+          { key:'price',     label:'Price',    val:fields.price },
+          { key:'rent',      label:'Rent',     val:fields.rent },
+          { key:'beds',      label:'Beds',     val:fields.beds },
+          { key:'baths',     label:'Baths',    val:fields.baths },
+          { key:'sqft',      label:'Sq ft',    val:fields.sqft },
+          { key:'year',      label:'Built',    val:fields.year },
+          { key:'city',      label:'City',     val:fields.city },
+          { key:'taxAnnual', label:'Tax',      val:fields.taxAnnual },
+          { key:'hoaMonthly',label:'HOA',      val:fields.hoaMonthly },
+        ].filter(f => fieldStatus[f.key] === 'success' && f.val);
+        if (!autoFilled.length) return null;
+        return (
+          <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+            {autoFilled.map(f => (
+              <span key={f.key} style={{ display:'inline-flex', alignItems:'center', gap:4, background:C.greenBg, border:`1px solid ${C.greenBorder}`, borderRadius:8, padding:'4px 10px', fontSize:11, color:C.green, fontWeight:600 }}>
+                <span style={{ fontSize:10, color:C.muted, fontWeight:400 }}>{f.label}</span>
+                {f.val}
+              </span>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* Price + Rent — always show price; hide rent if auto-filled cleanly */}
       <div className="riq-g2" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
         <AutoField id="price" label="Purchase Price" required value={fields.price} onChange={setField('price')} placeholder="$145,000" errMsg={errors.price} status={fieldStatus.price}/>
-        <AutoField id="rent"  label="Monthly Rent"   optional value={fields.rent}  onChange={setField('rent')}  placeholder="$1,200/mo" hint="Blank = AI estimates" status={fieldStatus.rent}/>
+        {fieldNeedsAttention('rent') && (
+          <AutoField id="rent"  label="Monthly Rent" optional value={fields.rent} onChange={setField('rent')} placeholder="$1,200/mo" hint="Blank = AI estimates" status={fieldStatus.rent}/>
+        )}
       </div>
 
-      {/* Property details */}
-      <div className="riq-g2" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-        <AutoField id="beds"  label="Bedrooms"   required value={fields.beds}  onChange={setField('beds')}  placeholder="3"     errMsg={errors.beds}  status={fieldStatus.beds}/>
-        <AutoField id="baths" label="Bathrooms"  required value={fields.baths} onChange={setField('baths')} placeholder="2"     errMsg={errors.baths} status={fieldStatus.baths}/>
-        <AutoField id="sqft"  label="Sq Footage" required value={fields.sqft}  onChange={setField('sqft')}  placeholder="1,200" errMsg={errors.sqft}  status={fieldStatus.sqft}/>
-        <AutoField id="year"  label="Year Built" required value={fields.year}  onChange={setField('year')}  placeholder="1987"  errMsg={errors.year}  status={fieldStatus.year}/>
-      </div>
+      {/* Property details — show only fields not cleanly auto-filled */}
+      {(fieldNeedsAttention('beds') || fieldNeedsAttention('baths') || fieldNeedsAttention('sqft') || fieldNeedsAttention('year')) && (
+        <div className="riq-g2" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          {fieldNeedsAttention('beds')  && <AutoField id="beds"  label="Bedrooms"   required value={fields.beds}  onChange={setField('beds')}  placeholder="3"     errMsg={errors.beds}  status={fieldStatus.beds}/>}
+          {fieldNeedsAttention('baths') && <AutoField id="baths" label="Bathrooms"  required value={fields.baths} onChange={setField('baths')} placeholder="2"     errMsg={errors.baths} status={fieldStatus.baths}/>}
+          {fieldNeedsAttention('sqft')  && <AutoField id="sqft"  label="Sq Footage" required value={fields.sqft}  onChange={setField('sqft')}  placeholder="1,200" errMsg={errors.sqft}  status={fieldStatus.sqft}/>}
+          {fieldNeedsAttention('year')  && <AutoField id="year"  label="Year Built" required value={fields.year}  onChange={setField('year')}  placeholder="1987"  errMsg={errors.year}  status={fieldStatus.year}/>}
+        </div>
+      )}
 
-      {/* City */}
-      <AutoField id="city" label="City / State" required value={fields.city} onChange={setField('city')}
-        placeholder="Austin, TX" hint="Sets state-specific tax & insurance rates" errMsg={errors.city} status={fieldStatus.city}/>
+      {/* City — hide if auto-filled cleanly */}
+      {fieldNeedsAttention('city') && (
+        <AutoField id="city" label="City / State" required value={fields.city} onChange={setField('city')}
+          placeholder="Austin, TX" hint="Sets state-specific tax & insurance rates" errMsg={errors.city} status={fieldStatus.city}/>
+      )}
 
       {/* Tax */}
       <div>
@@ -540,7 +584,7 @@ export function ConfirmCard({ fields, adv, mode, profile, onConfirm, onBack }) {
       </div>
       <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:16 }}>
         {[
-          { icon:'🏠', label:propTypeLabel },
+          { label:propTypeLabel },
           { icon:'📅', label:`${holdYrs}-yr hold` },
           { icon:'⚖️', label:`${MODES[mode]?.label || mode} mode` },
           { icon:'🔧', label:adv.selfManage ? 'Self-managed' : 'Pro-managed' },

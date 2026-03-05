@@ -382,3 +382,21 @@ export function recalcFromEdits(data, edits) {
     _settings: { ...s, downPaymentPct: downPct, interestRate: rate, taxRate, vacancy },
   };
 }
+
+// ── Pure mortgage payment calculator ─────────────────────────────────────────
+// Used by CommandCenter to show a live, editable mortgage figure.
+// Matches the PMT formula used in recalcFromEdits exactly.
+// loanType: '30yr_fixed' | '15yr_fixed' | '5_1_arm' | 'interest_only'
+export function calcMonthlyMortgage(price, downPaymentPct, interestRate, loanType) {
+  const p = parseFloat(price) || 0;
+  const d = parseFloat(downPaymentPct) || 20;
+  const r = parseFloat(interestRate) || 6.99;
+  if (p <= 0) return 0;
+  const principal = p * (1 - d / 100);
+  const monthlyRate = r / 12 / 100;
+  const termYrs = loanType === '15yr_fixed' ? 15 : 30;
+  const n = termYrs * 12;
+  if (loanType === 'interest_only') return principal * monthlyRate;
+  if (monthlyRate <= 0) return principal / n;
+  return principal * (monthlyRate * Math.pow(1 + monthlyRate, n)) / (Math.pow(1 + monthlyRate, n) - 1);
+}

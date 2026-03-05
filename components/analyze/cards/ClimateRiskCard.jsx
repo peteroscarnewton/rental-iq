@@ -73,7 +73,7 @@ export function ClimateRiskCard({data: climateData, loading}) {
                     border: `1px solid ${(h.rating === 'Very High' ? C.red : C.amber)}40`,
                     borderRadius: 6, padding: '1px 7px', whiteSpace: 'nowrap',
                   }}>
-                    {h.rating === 'Very High' ? '🔴' : '🟡'} {h.label}
+                    {h.label}
                   </span>
                 </div>
               ))}

@@ -19,21 +19,18 @@ export function BreakEvenIntelligence({data}) {
 
   const items = [];
   if (bi.rentGapToPositive) items.push({
-    icon: '🏠',
     label: 'Rent needed for positive cash flow',
     sub: bi.rentGapToPositive,
     value: bi.breakEvenRentForPositiveCF,
     accent: C.amber, accentBg: C.amberBg, accentBorder: C.amberBorder,
   });
   if (bi.rentGapTo10CoC) items.push({
-    icon: '🎯',
     label: 'Rent for 10% CoC (Kiyosaki target)',
     sub: bi.rentGapTo10CoC,
     value: bi.breakEvenRentFor10CoC,
     accent: C.green, accentBg: C.greenBg, accentBorder: C.greenBorder,
   });
   if (bi.priceGapToPositive) items.push({
-    icon: '🤝',
     label: 'Negotiate price to break even',
     sub: bi.priceGapToPositive,
     value: bi.breakEvenPrice,
@@ -48,7 +45,7 @@ export function BreakEvenIntelligence({data}) {
         <div style={{width:32,height:32,borderRadius:10,background:isYes?C.amberBg:C.redBg,
           border:`1px solid ${isYes?C.amberBorder:C.redBorder}`,
           display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:16}}>
-          {isYes ? '⚠️' : '🔑'}
+          isYes ? '!' : '→'
         </div>
         <div>
           <Label style={{marginBottom:0}}>
@@ -71,8 +68,7 @@ export function BreakEvenIntelligence({data}) {
             display:'flex',alignItems:'center',
             justifyContent:'space-between',gap:16,flexWrap:'wrap',
           }}>
-            <div style={{display:'flex',alignItems:'center',gap:10,flex:1,minWidth:0}}>
-              <span style={{fontSize:20,flexShrink:0}}>{item.icon}</span>
+            <div style={{display:'flex',alignItems:'center',gap:0,flex:1,minWidth:0}}>
               <div style={{minWidth:0}}>
                 <div style={{fontSize:12.5,fontWeight:600,color:C.text,marginBottom:2}}>{item.label}</div>
                 <div style={{fontSize:11.5,color:C.muted,lineHeight:1.4}}>{item.sub}</div>

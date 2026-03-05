@@ -49,10 +49,10 @@ export function OpportunityCostPanel({data, benchmarks}) {
       </div>
       <div style={{fontSize:12.5,color:C.textBody,lineHeight:1.7,background:C.soft,borderRadius:10,padding:'12px 14px'}}>
         {beatsIndex
-          ? <>✅ This deal <strong style={{color:C.green}}>{vsSP10yr > 0 ? 'outperforms' : 'matches'} the S&P 500 by {Math.abs(vsSP10yr).toFixed(1)}pp</strong> per year on IRR. Real estate premium vs Treasury: <strong style={{color:C.green}}>{spread > 0 ? '+':''}{spread}pp</strong>.</>
+          ? <>This deal <strong style={{color:C.green}}>{vsSP10yr > 0 ? 'outperforms' : 'matches'} the S&P 500 by {Math.abs(vsSP10yr).toFixed(1)}pp</strong> per year on IRR. Real estate premium vs Treasury: <strong style={{color:C.green}}>{spread > 0 ? '+':''}{spread}pp</strong>.</>
           : beatsTreasury
-          ? <>⚠️ This deal <strong style={{color:C.amber}}>beats the risk-free rate (+{spread}pp)</strong> but trails the S&P 500 by {Math.abs(vsSP10yr).toFixed(1)}pp/yr. Consider if leverage, depreciation, or appreciation gap closes this. </>
-          : <>🔴 This deal trails <strong style={{color:C.red}}>both the Treasury ({spread}pp below) and the S&P 500</strong>. The spreadsheet only makes sense if appreciation assumptions are conservative or you expect rent growth to improve returns significantly.</>
+          ? <>This deal <strong style={{color:C.amber}}>beats the risk-free rate (+{spread}pp)</strong> but trails the S&P 500 by {Math.abs(vsSP10yr).toFixed(1)}pp/yr. Consider if leverage, depreciation, or appreciation gap closes this. </>
+          : <>This deal trails <strong style={{color:C.red}}>both the Treasury ({spread}pp below) and the S&P 500</strong>. The spreadsheet only makes sense if appreciation assumptions are conservative or you expect rent growth to improve returns significantly.</>
         }
       </div>
       <div style={{marginTop:10,fontSize:11,color:C.muted}}>
