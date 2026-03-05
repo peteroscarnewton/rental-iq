@@ -26,10 +26,10 @@ async function getOrCreateUser(email, name, image) {
     return existing;
   }
 
-  // New user - create with 1 free token
+  // New user - create with 2 free tokens: 1 for Analyze + 1 for Scout AI search
   const { data: created, error } = await db
     .from('users')
-    .insert({ email, name: name || email.split('@')[0], image, tokens: 1 })
+    .insert({ email, name: name || email.split('@')[0], image, tokens: 2 })
     .select('id, email, tokens, name, image')
     .single();
 

@@ -1,9 +1,27 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { useSession } from 'next-auth/react';
-import Head from 'next/head';
-import Link from 'next/link';
+/**
+ * pages/scout.js — RentalIQ Scout (Phase 1 + Phase 2)
+ *
+ * Phase 1: Ranked market intelligence cards — loads immediately, no AI needed.
+ * Phase 2: AI deal discovery — 1 token per search. Guests get 1 free search.
+ *          Real listings from Zillow/Redfin/Realtor.com discovered via Gemini
+ *          search grounding, scored by the RentalIQ engine, cached 30 days.
+ *
+ * Token gate:
+ *   - Signed-in users: 1 token per live AI search (same pool as Analyze)
+ *   - New users: 2 tokens on signup (1 analyze + 1 scout)
+ *   - Guests: 1 free AI search per device (fingerprint anti-abuse)
+ *
+ * Design: premium-minimalist. Libre Baskerville headings. No emojis.
+ */
 
-// --- Design tokens ------------------------------------------------------------
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useSession }       from 'next-auth/react';
+import Head                 from 'next/head';
+import Link                 from 'next/link';
+import { getRankedMarkets, getMarketTagline } from '../lib/scoutMarkets.js';
+import { getDeviceFingerprint }               from '../lib/fingerprint.js';
+
+// ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
   bg:'#f5f5f8', white:'#ffffff', border:'#dddde4', text:'#0d0d0f', muted:'#72727a', soft:'#eaeaef',
   green:'#166638', greenBg:'#ecf6f1', greenBorder:'#96ccb0',
@@ -14,734 +32,765 @@ const C = {
   shadowSm:'0 1px 2px rgba(0,0,0,0.04)',
 };
 
-const inputBase = {
-  background:C.white, border:`1.5px solid ${C.border}`, borderRadius:10,
-  padding:'11px 14px', fontSize:14, fontFamily:"'DM Sans',system-ui,sans-serif",
-  color:C.text, outline:'none', width:'100%',
-  transition:'border-color 0.2s', WebkitAppearance:'none', boxSizing:'border-box',
-};
-
-// --- Sub-components -----------------------------------------------------------
-
-function Label({ children, style }) {
-  return <div style={{ fontSize:10, fontWeight:600, letterSpacing:'0.1em', textTransform:'uppercase', color:C.muted, marginBottom:8, ...style }}>{children}</div>;
-}
-
-function Card({ children, style }) {
-  return <div style={{ background:C.white, border:`1px solid ${C.border}`, borderRadius:14, boxShadow:C.shadow, padding:24, ...style }}>{children}</div>;
-}
-
-// --- Rent Stats Component -----------------------------------------------------
-function RentStats({ city, beds }) {
-  const [data,    setData]    = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState(false);
-  const lastKey = useRef('');
-
-  useEffect(() => {
-    if (!city) return;
-    const key = `${city}:${beds}`;
-    if (key === lastKey.current) return;
-    lastKey.current = key;
-    setLoading(true); setError(false); setData(null);
-    fetch('/api/rent-estimate', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ city, beds }),
-    })
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => { setError(true); setLoading(false); });
-  }, [city, beds]);
-
-  if (!city) return null;
-
-  if (loading) return (
-    <div style={{ padding:'14px 18px', background:C.soft, borderRadius:12, fontSize:13, color:C.muted, display:'flex', alignItems:'center', gap:10 }}>
-      <div style={{ width:14, height:14, borderRadius:'50%', border:`2px solid ${C.border}`, borderTopColor:C.green, animation:'spin 0.8s linear infinite', flexShrink:0 }}/>
-      Loading market rent data...
-    </div>
-  );
-
-  if (error || !data?.mid) return null;
-
-  const confColor = data.confidence === 'High' ? C.green : data.confidence === 'Medium' ? C.amber : C.muted;
-
+// ─── Shared micro-components ──────────────────────────────────────────────────
+function Pill({ label, value, color = C.text, bg = C.soft, border = C.border }) {
   return (
-    <div style={{ background:C.greenBg, border:`1.5px solid ${C.greenBorder}`, borderRadius:14, padding:'16px 20px', animation:'fadeup 0.3s ease both' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-        <div style={{ fontSize:11, fontWeight:700, letterSpacing:'0.1em', textTransform:'uppercase', color:C.green }}>
-          Market Rent - {beds}BR in {city.split(',')[0]}
-        </div>
-        <span style={{ fontSize:10, fontWeight:600, color:confColor, background:`${confColor}18`, border:`1px solid ${confColor}35`, borderRadius:100, padding:'2px 9px' }}>
-          {data.confidence} confidence
-        </span>
-      </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:12 }}>
-        {[
-          { label:'Rent Low',  value:`$${data.low?.toLocaleString()}`,  color:C.muted },
-          { label:'Rent Mid',  value:`$${data.mid?.toLocaleString()}`,  color:C.green },
-          { label:'Rent High', value:`$${data.high?.toLocaleString()}`, color:C.muted },
-        ].map((s,i) => (
-          <div key={i} style={{ background:i===1?'rgba(22,102,56,0.08)':C.white, border:`1px solid ${i===1?C.greenBorder:C.border}`, borderRadius:10, padding:'10px 14px', textAlign:'center' }}>
-            <div style={{ fontSize:9.5, fontWeight:600, letterSpacing:'0.1em', textTransform:'uppercase', color:i===1?C.green:C.muted, marginBottom:4 }}>{s.label}</div>
-            <div style={{ fontSize:17, fontWeight:700, color:s.color, fontFamily:"'Libre Baskerville',Georgia,serif" }}>{s.value}</div>
-          </div>
-        ))}
-      </div>
-      <div style={{ fontSize:11.5, color:'#3a6e50', lineHeight:1.5 }}>
-        📊 {data.sources?.join(' · ')} · {data.note}
-      </div>
+    <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: 10, padding: '8px 12px' }}>
+      <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: C.muted, marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color, fontFamily: "'Libre Baskerville',Georgia,serif", lineHeight: 1 }}>{value}</div>
     </div>
   );
 }
 
-// --- Live Market Intel Component (Phase 4C) -----------------------------------
-// Calls /api/scout-market to get AI insights grounded in live market data
-function LiveMarketIntel({ city, state, goal, budget }) {
-  const [data,    setData]    = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState(null);
-  const lastCity = useRef('');
+function ScoreBar({ value }) {
+  return (
+    <div style={{ height: 4, background: C.soft, borderRadius: 2, overflow: 'hidden' }}>
+      <div style={{ height: '100%', width: `${Math.min(100, value)}%`, background: C.green, borderRadius: 2, transition: 'width 0.5s ease' }}/>
+    </div>
+  );
+}
 
-  useEffect(() => {
-    if (!city || city === lastCity.current) return;
-    lastCity.current = city;
-    setLoading(true); setError(null); setData(null);
-    fetch('/api/scout-market', {
-      method:  'POST',
-      headers: { 'content-type': 'application/json' },
-      body:    JSON.stringify({ city, state, goal: goal || 'balanced', budget }),
-    })
-      .then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(e.error || 'Error')))
-      .then(d => { setData(d); setLoading(false); })
-      .catch(e => { setError(typeof e === 'string' ? e : 'Could not load market intel'); setLoading(false); });
-  }, [city, state, goal, budget]);
+function LandlordBadge({ score }) {
+  const color  = score >= 80 ? C.green  : score >= 60 ? C.amber  : C.red;
+  const bg     = score >= 80 ? C.greenBg : score >= 60 ? C.amberBg : C.redBg;
+  const border = score >= 80 ? C.greenBorder : score >= 60 ? C.amberBorder : C.redBorder;
+  const label  = score >= 80 ? 'Landlord Friendly' : score >= 60 ? 'Moderate Laws' : 'Tenant Favorable';
+  return (
+    <span style={{ fontSize: 10.5, fontWeight: 700, color, background: bg, border: `1px solid ${border}`, borderRadius: 100, padding: '3px 10px', whiteSpace: 'nowrap' }}>
+      {label} · {score}/100
+    </span>
+  );
+}
 
-  if (!city) return null;
-
-  const tempColors = {
-    hot:     { bg:'#fdf4f4', border:'#e0aaaa', text:'#a62626', pill:'#a62626' },
-    warm:    { bg:'#fdf4e8', border:'#dfc070', text:'#8a5800', pill:'#8a5800' },
-    neutral: { bg:C.soft,   border:C.border,  text:C.muted,   pill:C.muted   },
-    cool:    { bg:C.blueBg, border:C.blueBorder, text:C.blue, pill:C.blue    },
-    cold:    { bg:C.blueBg, border:C.blueBorder, text:C.blue, pill:C.blue    },
+// ─── Source badge ─────────────────────────────────────────────────────────────
+function SourceBadge({ source }) {
+  const map = {
+    zillow:  { color: '#006AFF', label: 'Zillow' },
+    redfin:  { color: '#CC0000', label: 'Redfin' },
+    realtor: { color: '#D9232D', label: 'Realtor' },
   };
-
-  if (loading) return (
-    <div style={{ background:C.soft, border:`1px solid ${C.border}`, borderRadius:14, padding:'20px 24px', marginBottom:16 }}>
-      <div style={{ display:'flex', alignItems:'center', gap:10, fontSize:13, color:C.muted }}>
-        <div style={{ width:14, height:14, borderRadius:'50%', border:`2px solid ${C.border}`, borderTopColor:C.green, animation:'spin 0.8s linear infinite', flexShrink:0 }}/>
-        Loading live market intelligence for {city.split(',')[0]}...
-      </div>
-    </div>
-  );
-
-  if (error) return (
-    <div style={{ background:C.soft, border:`1px solid ${C.border}`, borderRadius:14, padding:'16px 20px', marginBottom:16, fontSize:13, color:C.muted }}>
-      {error.includes('token') ? (
-        <span>📊 <strong>Market Intel</strong> requires 1 token. <a href="/analyze" style={{ color:C.green }}>Get tokens →</a></span>
-      ) : (
-        <span>Market intelligence unavailable for this city right now.</span>
-      )}
-    </div>
-  );
-
-  if (!data) return null;
-
-  const ctx   = data.marketContext || {};
-  const temp  = ctx.marketTemp || 'neutral';
-  const tc    = tempColors[temp] || tempColors.neutral;
-
+  const s = map[source] || map.zillow;
   return (
-    <div style={{ background:C.white, border:`1.5px solid ${C.greenBorder}`, borderRadius:14, padding:'20px 24px', marginBottom:16, animation:'fadeup 0.35s ease both' }}>
-      {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:16, gap:12 }}>
-        <div>
-          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
-            <div style={{ width:7, height:7, background:C.green, borderRadius:'50%' }}/>
-            <span style={{ fontSize:11, fontWeight:700, letterSpacing:'0.1em', textTransform:'uppercase', color:C.green }}>Live Market Intel · {city.split(',')[0]}</span>
-          </div>
-          <div style={{ fontSize:13, color:C.muted }}>Powered by live FHFA, Redfin, and BLS data · Not AI training data</div>
-        </div>
-        {ctx.marketTemp && (
-          <span style={{ fontSize:11, fontWeight:700, letterSpacing:'0.06em', textTransform:'uppercase', color:tc.pill, background:tc.bg, border:`1.5px solid ${tc.border}`, borderRadius:100, padding:'4px 12px', flexShrink:0 }}>
-            {temp.charAt(0).toUpperCase() + temp.slice(1)} Market
-          </span>
-        )}
-      </div>
-
-      {/* Live data pills row */}
-      <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:16 }}>
-        {[
-          ctx.mortgageRate       ? { label:'30yr Rate',    value:`${ctx.mortgageRate}%`,          color:C.muted }   : null,
-          ctx.appreciationRate5yr? { label:'5yr CAGR',     value:`${ctx.appreciationRate5yr}%/yr`, color:C.green }   : null,
-          ctx.daysOnMarket       ? { label:'Median DOM',   value:`${ctx.daysOnMarket} days`,       color:C.text }    : null,
-          ctx.saleToList         ? { label:'Sale/List',    value:`${(ctx.saleToList*100).toFixed(1)}%`, color:ctx.saleToList>=1.0?C.red:C.blue } : null,
-          ctx.unemploymentRate   ? { label:'Unemployment', value:`${ctx.unemploymentRate}%`,       color:C.muted }   : null,
-          ctx.landlordScore      ? { label:'Landlord Score', value:`${ctx.landlordScore}/100`,     color:ctx.landlordScore>=70?C.green:ctx.landlordScore>=50?C.amber:C.red } : null,
-        ].filter(Boolean).map((pill,i) => (
-          <div key={i} style={{ display:'inline-flex', flexDirection:'column', background:C.soft, border:`1px solid ${C.border}`, borderRadius:10, padding:'7px 12px', minWidth:80 }}>
-            <span style={{ fontSize:9.5, fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase', color:C.muted, marginBottom:2 }}>{pill.label}</span>
-            <span style={{ fontSize:15, fontWeight:700, color:pill.color, fontFamily:"'Libre Baskerville',Georgia,serif" }}>{pill.value}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* AI Verdict */}
-      {data.verdict && (
-        <div style={{ background:C.greenBg, border:`1px solid ${C.greenBorder}`, borderRadius:10, padding:'14px 16px', marginBottom:14 }}>
-          <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.1em', textTransform:'uppercase', color:C.green, marginBottom:6 }}>Market Verdict</div>
-          <div style={{ fontSize:13.5, color:'#1c3d29', lineHeight:1.6 }}>{data.verdict}</div>
-        </div>
-      )}
-
-      {/* Two-column signals + risks */}
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:14 }} className="scout-mg">
-        {data.signals?.length > 0 && (
-          <div style={{ background:C.soft, borderRadius:10, padding:'14px 16px' }}>
-            <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.1em', textTransform:'uppercase', color:C.text, marginBottom:8 }}>Key Signals</div>
-            {data.signals.map((s,i) => (
-              <div key={i} style={{ fontSize:12.5, color:C.text, lineHeight:1.5, marginBottom:i < data.signals.length-1 ? 7 : 0, paddingLeft:12, borderLeft:`2px solid ${C.green}` }}>{s}</div>
-            ))}
-          </div>
-        )}
-        {data.risks?.length > 0 && (
-          <div style={{ background:C.redBg, border:`1px solid ${C.redBorder}`, borderRadius:10, padding:'14px 16px' }}>
-            <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.1em', textTransform:'uppercase', color:C.red, marginBottom:8 }}>Risks</div>
-            {data.risks.map((r,i) => (
-              <div key={i} style={{ fontSize:12.5, color:'#5a1a1a', lineHeight:1.5, marginBottom:i < data.risks.length-1 ? 7 : 0, paddingLeft:12, borderLeft:`2px solid ${C.red}` }}>{r}</div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Strategy */}
-      {data.strategy && (
-        <div style={{ fontSize:13, color:C.muted, lineHeight:1.6, borderTop:`1px solid ${C.border}`, paddingTop:12, marginTop:4 }}>
-          <strong style={{ color:C.text }}>Strategy: </strong>{data.strategy}
-        </div>
-      )}
-
-      {/* Data freshness footer */}
-      {data.dataNote && (
-        <div style={{ fontSize:11, color:C.muted, marginTop:10 }}>{data.dataNote}</div>
-      )}
-    </div>
+    <span style={{ fontSize: 10, fontWeight: 700, color: s.color, background: `${s.color}12`, border: `1px solid ${s.color}30`, borderRadius: 6, padding: '2px 8px' }}>
+      {s.label}
+    </span>
   );
 }
 
-// --- Results Panel ------------------------------------------------------------
-function ResultsPanel({ filters, onBack }) {
-  const ref = useRef(null);
-  useEffect(() => { ref.current?.scrollIntoView({ behavior:'smooth', block:'start' }); }, []);
+// ─── Real deal card (Phase 2) ─────────────────────────────────────────────────
+function DealCard({ deal, onFlagSold }) {
+  const [flagging, setFlagging] = useState(false);
+  const [flagged,  setFlagged]  = useState(false);
 
-  const { city, priceMin, priceMax, bedsMin, bedsMax, baths, propTypes, daysOnMarket, sortBy } = filters;
+  const cf      = deal.cash_flow;
+  const cfColor = cf >= 200 ? C.green : cf >= 0 ? C.amber : C.red;
+  const cfLabel = cf >= 0 ? `+$${cf.toLocaleString()}/mo` : `-$${Math.abs(cf).toLocaleString()}/mo`;
+  const daysAgo = deal.first_seen ? Math.round((Date.now() - new Date(deal.first_seen).getTime()) / 86400000) : null;
 
-  // Build Zillow URL
-  function buildZillow() {
-    const stateMatch = city.match(/,\s*([A-Z]{2})$/i);
-    const state      = stateMatch ? stateMatch[1].toLowerCase() : '';
-    const citySlug   = city.split(',')[0].trim().toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'');
-    const base       = `https://www.zillow.com/${citySlug}-${state}/`;
-    const fs = {};
-    if (priceMin || priceMax) fs.price = { min: parseInt(priceMin)||undefined, max: parseInt(priceMax)||undefined };
-    if (bedsMin)  fs.beds  = { min: parseInt(bedsMin) };
-    if (bedsMax)  fs.beds  = { ...fs.beds, max: parseInt(bedsMax) };
-    if (baths)    fs.baths = { min: parseFloat(baths) };
-    if (daysOnMarket !== 'any') fs.doz = { value: String(daysOnMarket) };
-    fs.sf  = { value: propTypes.includes('sfr') };
-    fs.mf  = { value: propTypes.includes('mfr') };
-    fs.con = { value: propTypes.includes('condo') };
-    fs.tow = { value: propTypes.includes('townhouse') };
-    // clean undefined
-    Object.keys(fs).forEach(k => { if (fs[k]===undefined) delete fs[k]; });
-    const sortMap = { newest:'days', price_asc:'priced', price_desc:'pricea' };
-    fs.sort = { value: sortMap[sortBy] || 'days' };
-    const sqs = encodeURIComponent(JSON.stringify({ pagination:{}, isMapVisible:false, filterState:fs }));
-    return `${base}?searchQueryState=${sqs}`;
+  async function handleFlagSold() {
+    if (flagged || flagging) return;
+    setFlagging(true);
+    try {
+      await fetch('/api/scout-deals/flag', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: deal.id }),
+      });
+      setFlagged(true);
+      onFlagSold?.(deal.id);
+    } catch {}
+    setFlagging(false);
   }
-
-  // Build Redfin URL
-  function buildRedfin() {
-    const stateMatch = city.match(/,\s*([A-Z]{2})$/i);
-    const state    = stateMatch ? stateMatch[1] : '';
-    const citySlug = city.split(',')[0].trim().replace(/\s+/g,'-');
-    const base     = `https://www.redfin.com/${state}/${citySlug}/filter/`;
-    const parts    = [];
-    if (priceMin)                    parts.push(`min-price=${priceMin}`);
-    if (priceMax)                    parts.push(`max-price=${priceMax}`);
-    if (bedsMin)                     parts.push(`min-beds=${bedsMin}`);
-    if (baths)                       parts.push(`min-baths=${baths}`);
-    if (daysOnMarket !== 'any')      parts.push(`max-days-on-market=${daysOnMarket}`);
-    return parts.length ? base + parts.join(',') : base;
-  }
-
-  const filterLabels = [
-    priceMin || priceMax ? `$${(parseInt(priceMin)||0).toLocaleString()}-$${(parseInt(priceMax)||0).toLocaleString()}` : null,
-    bedsMin  ? `${bedsMin}${bedsMax&&bedsMax!==bedsMin?`-${bedsMax}`:'+'}BR` : null,
-    baths    ? `${baths}+ bath` : null,
-    propTypes.length ? propTypes.map(t=>({sfr:'SFR',mfr:'Multi-family',condo:'Condo',townhouse:'Townhouse'})[t]).filter(Boolean).join(', ') : null,
-    daysOnMarket !== 'any' ? `${daysOnMarket}+ DOM` : null,
-  ].filter(Boolean);
-
-  const tips = [
-    daysOnMarket !== 'any' && parseInt(daysOnMarket) >= 30
-      ? '⚡ Filtering for 30+ days on market targets motivated sellers - more negotiating leverage.'
-      : null,
-    propTypes.includes('mfr')
-      ? '🏘️ Multi-family (2-4 units) gives built-in rent diversification and house-hack potential.'
-      : null,
-    priceMax && parseInt(priceMax) <= 150000
-      ? '💵 At this price point, the 1% rule is achievable in many Midwest and Southeast markets.'
-      : null,
-    '🔍 Open both Zillow and Redfin - listings sometimes appear on one but not the other.',
-    '📋 Found a deal? Paste the URL into RentalIQ for cap rate, cash flow, wealth projection, and a buy/pass verdict.',
-  ].filter(Boolean);
 
   return (
-    <div ref={ref} style={{ animation:'fadeup 0.35s ease both' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:20, gap:12 }}>
-        <div>
-          <div style={{ fontFamily:"'Libre Baskerville',Georgia,serif", fontSize:22, color:C.text, marginBottom:4 }}>
-            Properties in {city.split(',')[0]}
+    <div className="riq-lift" style={{
+      background: C.white, border: `1px solid ${C.border}`, borderRadius: 16,
+      overflow: 'hidden', animation: 'riq-fadeup 0.4s ease both',
+      opacity: flagged ? 0.4 : 1, transition: 'opacity 0.3s ease',
+    }}>
+      {/* Header */}
+      <div style={{ padding: '18px 20px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5, flexWrap: 'wrap' }}>
+              <SourceBadge source={deal.source}/>
+              {daysAgo !== null && (
+                <span style={{ fontSize: 10.5, color: daysAgo <= 3 ? C.green : daysAgo <= 14 ? C.amber : C.muted, fontWeight: 600 }}>
+                  Found {daysAgo === 0 ? 'today' : `${daysAgo}d ago`}
+                </span>
+              )}
+              {deal.days_on_market !== null && (
+                <span style={{ fontSize: 10.5, color: C.muted }}>· {deal.days_on_market} days listed</span>
+              )}
+            </div>
+            <div style={{ fontFamily: "'Libre Baskerville',Georgia,serif", fontSize: 17, fontWeight: 700, color: C.text, lineHeight: 1.2, marginBottom: 3 }}>
+              {deal.address}
+            </div>
+            <div style={{ fontSize: 13, color: C.muted }}>{deal.city}, {deal.state}</div>
           </div>
-          <div style={{ fontSize:12.5, color:C.muted }}>{filterLabels.join(' · ')}</div>
+          <div style={{ flexShrink: 0, textAlign: 'right' }}>
+            <div style={{ fontFamily: "'Libre Baskerville',Georgia,serif", fontSize: 22, fontWeight: 700, color: C.text, lineHeight: 1 }}>
+              ${deal.price.toLocaleString()}
+            </div>
+            <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>{deal.beds}BR · {deal.baths}BA{deal.sqft ? ` · ${deal.sqft.toLocaleString()} sqft` : ''}</div>
+          </div>
         </div>
-        <button onClick={onBack}
-          style={{ fontSize:12, color:C.muted, background:'none', border:`1px solid ${C.border}`, borderRadius:8, padding:'7px 14px', cursor:'pointer', fontFamily:'inherit', whiteSpace:'nowrap', flexShrink:0 }}>
-          ← Edit Search
+
+        {/* Metrics */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 14 }}>
+          <Pill label="Cap Rate" value={`${deal.cap_rate}%`} color={deal.cap_rate >= 7 ? C.green : deal.cap_rate >= 5.5 ? C.amber : C.text}/>
+          <Pill label="Est. Cash Flow" value={cfLabel} color={cfColor}/>
+          <Pill label="Est. Rent" value={`$${deal.estimated_rent?.toLocaleString()}/mo`} color={C.blue}/>
+        </div>
+
+        {/* Caveat */}
+        <div style={{ fontSize: 10.5, color: C.muted, marginBottom: 14, lineHeight: 1.4 }}>
+          Estimates: 20% down · 7% rate · HUD FMR rent · 8% vacancy · 10% mgmt. Verify with full analysis.
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div style={{ padding: '12px 20px 16px', display: 'flex', gap: 8, flexWrap: 'wrap', borderTop: `1px solid ${C.border}` }}>
+        <a href={deal.listing_url} target="_blank" rel="noopener noreferrer"
+          style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            background: C.green, color: '#fff', borderRadius: 10, padding: '10px 14px',
+            textDecoration: 'none', fontWeight: 700, fontSize: 13,
+            fontFamily: "'DM Sans',system-ui,sans-serif",
+            boxShadow: '0 2px 8px rgba(22,102,56,0.25)' }}>
+          View Listing
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 8L8 2M8 2H4M8 2V6" stroke="white" strokeWidth="1.5" strokeLinecap="round"/></svg>
+        </a>
+        <Link href={`/analyze?url=${encodeURIComponent(deal.listing_url)}`}
+          style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            background: C.white, color: C.green, border: `1.5px solid ${C.green}`, borderRadius: 10, padding: '10px 14px',
+            textDecoration: 'none', fontWeight: 700, fontSize: 13,
+            fontFamily: "'DM Sans',system-ui,sans-serif" }}>
+          Full Analysis →
+        </Link>
+        <button onClick={handleFlagSold} disabled={flagging || flagged}
+          title="Report this listing as sold or no longer active"
+          style={{ padding: '10px 12px', border: `1px solid ${C.border}`, borderRadius: 10, background: 'none',
+            cursor: flagged ? 'default' : 'pointer', color: flagged ? C.green : C.muted,
+            fontFamily: "'DM Sans',system-ui,sans-serif", fontSize: 12, fontWeight: 500,
+            display: 'flex', alignItems: 'center', gap: 5 }}>
+          {flagged ? '✓ Reported' : flagging ? '...' : 'Sold?'}
         </button>
       </div>
+    </div>
+  );
+}
 
-      {/* Live Market Intelligence (Phase 4C) — AI grounded in live data */}
-      <div style={{ marginBottom:4 }}>
-        <LiveMarketIntel
-          city={city.split(',')[0].trim()}
-          state={city.match(/,\s*([A-Z]{2})$/i)?.[1] || ''}
-          goal={filters.goal || 'balanced'}
-          budget={priceMax || ''}
-        />
-      </div>
+// ─── Deal search panel (Phase 2) ──────────────────────────────────────────────
+function DealSearchPanel({ session, filters, onDealsLoaded }) {
+  const [loading,     setLoading]     = useState(false);
+  const [deals,       setDeals]       = useState(null);   // null = not searched yet
+  const [error,       setError]       = useState(null);
+  const [guestStatus, setGuestStatus] = useState(null);   // { allowed, usedScout }
+  const [tokensLeft,  setTokensLeft]  = useState(null);
+  const [flaggedIds,  setFlaggedIds]  = useState(new Set());
+  const fpRef = useRef(null);
+  const tokens = session?.user?.tokens ?? 0;
+  const isAuthed = !!session?.user?.id;
 
-      {/* Real rent data */}
-      <div style={{ marginBottom:16 }}>
-        <RentStats city={city} beds={parseInt(bedsMin)||2} />
-      </div>
+  // Get fingerprint and guest status on mount
+  useEffect(() => {
+    if (isAuthed) return;
+    const fp = getDeviceFingerprint();
+    fpRef.current = fp;
+    fetch(`/api/guest-usage?action=check&type=scout&fp=${fp}`)
+      .then(r => r.json())
+      .then(d => setGuestStatus(d))
+      .catch(() => setGuestStatus({ allowed: true }));
+  }, [isAuthed]);
 
-      {/* Open Zillow / Redfin */}
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:16 }} className="scout-mg">
-        <a href={buildZillow()} target="_blank" rel="noopener noreferrer"
-          style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10, background:'#006AFF', color:'#fff', borderRadius:14, padding:'18px 20px', textDecoration:'none', fontWeight:700, fontSize:15, boxShadow:'0 4px 16px rgba(0,106,255,0.25)' }}>
-          <svg width="22" height="22" viewBox="0 0 40 40" fill="none">
-            <path d="M20 4L36 18V36H26V26H14V36H4V18L20 4Z" fill="white"/>
-          </svg>
-          Open in Zillow ↗
-        </a>
-        <a href={buildRedfin()} target="_blank" rel="noopener noreferrer"
-          style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10, background:'#CC0000', color:'#fff', borderRadius:14, padding:'18px 20px', textDecoration:'none', fontWeight:700, fontSize:15, boxShadow:'0 4px 16px rgba(204,0,0,0.22)' }}>
-          <svg width="20" height="20" viewBox="0 0 40 40" fill="none">
-            <circle cx="20" cy="20" r="16" fill="white"/>
-            <path d="M20 10C14.48 10 10 14.48 10 20s4.48 10 10 10 10-4.48 10-10S25.52 10 20 10zm0 17c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z" fill="#CC0000"/>
-          </svg>
-          Open in Redfin ↗
-        </a>
-      </div>
+  // Auto-load cached deals for the top market on mount
+  useEffect(() => {
+    const top = getRankedMarkets(filters)[0];
+    if (!top) return;
+    fetch(`/api/scout-deals?city=${encodeURIComponent(top.city)}&state=${top.state}&priceMax=${filters.priceMax}&beds=${filters.beds}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.deals?.length > 0) {
+          setDeals(d.deals);
+          onDealsLoaded?.(d.deals);
+        }
+      })
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-      {/* Filter summary */}
-      <Card style={{ marginBottom:14 }}>
-        <Label>Applied Investor Filters</Label>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:12 }} className="scout-mg">
-          {[
-            { l:'City / Market',   v: city },
-            { l:'Price Range',     v: priceMin||priceMax ? `$${(parseInt(priceMin)||0).toLocaleString()} - $${(parseInt(priceMax)||0).toLocaleString()}` : 'Any' },
-            { l:'Bedrooms',        v: bedsMin ? `${bedsMin}${bedsMax&&bedsMax!==bedsMin?` - ${bedsMax}`:'+'}` : 'Any' },
-            { l:'Bathrooms',       v: baths ? `${baths}+` : 'Any' },
-            { l:'Property Type',   v: propTypes.length ? propTypes.map(t=>({sfr:'Single Family',mfr:'Multi-Family',condo:'Condo',townhouse:'Townhouse'})[t]).filter(Boolean).join(', ') : 'Any' },
-            { l:'Days on Market',  v: daysOnMarket==='any' ? 'Any' : `${daysOnMarket}+ days` },
-            { l:'Sort By',         v: ({newest:'Newest first',price_asc:'Price: Low → High',price_desc:'Price: High → Low'})[sortBy]||sortBy },
-          ].map((item,i) => (
-            <div key={i}>
-              <div style={{ fontSize:10, fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase', color:C.muted, marginBottom:3 }}>{item.l}</div>
-              <div style={{ fontSize:13.5, fontWeight:600, color:C.text }}>{item.v}</div>
-            </div>
-          ))}
-        </div>
-      </Card>
+  async function runSearch() {
+    setLoading(true);
+    setError(null);
+    setDeals(null);
 
-      {/* CTA - shown early so mobile users don't miss it */}
-      <Card style={{ background:C.greenBg, border:`1.5px solid ${C.greenBorder}`, marginBottom:14, padding:'20px 24px' }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:16, flexWrap:'wrap' }}>
-          <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ fontFamily:"'Libre Baskerville',Georgia,serif", fontSize:17, color:C.text, marginBottom:4 }}>Found a listing you like?</div>
-            <div style={{ fontSize:13, color:'#3a6e50', lineHeight:1.5 }}>Paste the URL into RentalIQ for cap rate, cash flow, wealth projection, and a buy/pass verdict in 30 sec.</div>
+    const top = getRankedMarkets(filters)[0];
+    if (!top) { setError('No markets match your filters.'); setLoading(false); return; }
+
+    const body = {
+      city:     top.city,
+      state:    top.state,
+      priceMax: filters.priceMax,
+      beds:     filters.beds,
+      propType: filters.propType,
+      goal:     filters.goal,
+    };
+    if (!isAuthed && fpRef.current) body.fp = fpRef.current;
+
+    try {
+      const res = await fetch('/api/scout-deals', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (data.code === 'NO_TOKENS' || data.code === 'GUEST_USED') {
+          setError('token_used');
+        } else if (data.code === 'UNAUTHENTICATED') {
+          setError('sign_in');
+        } else {
+          setError(data.error || 'Search failed. Try again.');
+        }
+        setLoading(false);
+        return;
+      }
+
+      setDeals(data.deals || []);
+      if (data.tokensRemaining !== null) setTokensLeft(data.tokensRemaining);
+      if (!isAuthed) setGuestStatus(prev => ({ ...prev, usedScout: true, allowed: false }));
+      onDealsLoaded?.(data.deals || []);
+    } catch {
+      setError('AI search temporarily unavailable. Try again in a moment.');
+    }
+    setLoading(false);
+  }
+
+  const canSearch = isAuthed
+    ? tokens >= 1
+    : (guestStatus?.allowed !== false);
+
+  const visibleDeals = deals?.filter(d => !flaggedIds.has(d.id)) || [];
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      {/* Phase 2 header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, gap: 10, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontFamily: "'Libre Baskerville',Georgia,serif", fontSize: 20, fontWeight: 700, color: C.text, marginBottom: 3 }}>
+            AI Deal Discovery
           </div>
-          <Link href="/analyze"
-            style={{ display:'inline-block', background:C.green, color:'#fff', borderRadius:10, padding:'11px 22px', fontSize:13.5, fontWeight:700, textDecoration:'none', letterSpacing:'-0.01em', flexShrink:0 }}>
-            Analyze a Listing →
+          <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.5 }}>
+            Search for active listings in the top-ranked market using Gemini AI + live search.
+            Results are real listings on Zillow, Redfin, or Realtor.com — not generated.
+          </div>
+        </div>
+        {isAuthed && (
+          <div style={{ fontSize: 12, color: tokens <= 0 ? C.red : tokens <= 2 ? C.amber : C.green, fontWeight: 700, background: C.soft, border: `1px solid ${C.border}`, borderRadius: 8, padding: '5px 12px', flexShrink: 0 }}>
+            {tokensLeft ?? tokens} token{(tokensLeft ?? tokens) !== 1 ? 's' : ''} remaining
+          </div>
+        )}
+      </div>
+
+      {/* Search button or gate */}
+      {error === 'token_used' ? (
+        <div style={{ background: C.amberBg, border: `1px solid ${C.amberBorder}`, borderRadius: 14, padding: '20px 22px', marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, fontSize: 14.5, color: C.amber, marginBottom: 6 }}>
+            {isAuthed ? 'Out of tokens' : 'Free search used'}
+          </div>
+          <div style={{ fontSize: 13, color: '#5a3d00', marginBottom: 14, lineHeight: 1.55 }}>
+            {isAuthed
+              ? 'Purchase more tokens to run additional AI searches and analyses.'
+              : 'Create a free account for 2 tokens — 1 Scout search + 1 full property analysis.'}
+          </div>
+          <Link href={isAuthed ? '/tokens' : '/auth'}
+            style={{ display: 'inline-block', padding: '10px 22px', borderRadius: 10, background: C.green, color: '#fff', textDecoration: 'none', fontWeight: 700, fontSize: 13, fontFamily: "'DM Sans',system-ui,sans-serif" }}>
+            {isAuthed ? 'Buy tokens →' : 'Sign up free →'}
           </Link>
         </div>
-      </Card>
-
-      {/* Tips */}
-      <div style={{ background:C.amberBg, border:`1px solid ${C.amberBorder}`, borderRadius:14, padding:'16px 20px', marginBottom:14 }}>
-        <Label style={{ color:C.amber }}>Investor Tips for This Search</Label>
-        <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
-          {tips.map((tip,i) => (
-            <div key={i} style={{ fontSize:13, color:'#5a3d00', lineHeight:1.55 }}>{tip}</div>
-          ))}
+      ) : error === 'sign_in' ? (
+        <div style={{ background: C.soft, border: `1px solid ${C.border}`, borderRadius: 14, padding: '20px 22px', marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, fontSize: 14.5, color: C.text, marginBottom: 6 }}>Sign in to search</div>
+          <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>Create a free account for 2 tokens to start finding deals.</div>
+          <Link href="/auth" style={{ display: 'inline-block', padding: '10px 22px', borderRadius: 10, background: C.green, color: '#fff', textDecoration: 'none', fontWeight: 700, fontSize: 13, fontFamily: "'DM Sans',system-ui,sans-serif" }}>
+            Sign up free →
+          </Link>
         </div>
-      </div>
-
-      {/* CTA (full version, bottom) */}
-      <Card style={{ background:C.greenBg, border:`1.5px solid ${C.greenBorder}`, textAlign:'center', padding:'28px 24px' }}>
-        <div style={{ fontFamily:"'Libre Baskerville',Georgia,serif", fontSize:20, marginBottom:8, color:C.text }}>
-          Found a listing you like?
+      ) : (
+        <div style={{ marginBottom: 14 }}>
+          {!isAuthed && guestStatus && !guestStatus.usedScout && (
+            <div style={{ background: C.greenBg, border: `1px solid ${C.greenBorder}`, borderRadius: 12, padding: '10px 16px', marginBottom: 10, fontSize: 12.5, color: '#3a6e50', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zm0 2.5v3.5M7 9.5v.5" stroke={C.green} strokeWidth="1.4" strokeLinecap="round"/></svg>
+              You have <strong>1 free AI search</strong> available — no account needed.
+            </div>
+          )}
+          <button onClick={runSearch} disabled={loading || !canSearch}
+            style={{ width: '100%', padding: '15px', border: 'none', borderRadius: 13,
+              background: canSearch ? C.green : C.soft,
+              color: canSearch ? '#fff' : C.muted,
+              fontFamily: "'DM Sans',system-ui,sans-serif", fontSize: 14.5, fontWeight: 700,
+              cursor: canSearch ? 'pointer' : 'not-allowed',
+              boxShadow: canSearch ? '0 4px 16px rgba(22,102,56,0.3)' : 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+              transition: 'all 0.2s' }}>
+            {loading ? (
+              <>
+                <div style={{ width: 16, height: 16, border: '2.5px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', borderRadius: '50%', animation: 'riq-spin 0.7s linear infinite' }}/>
+                Searching for active listings...
+              </>
+            ) : (
+              <>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
+                  <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                </svg>
+                {canSearch
+                  ? `Search for deals in top market${isAuthed ? ` · 1 token` : ` (free)`}`
+                  : 'No searches remaining'}
+              </>
+            )}
+          </button>
+          {typeof error === 'string' && error !== 'token_used' && error !== 'sign_in' && (
+            <div style={{ marginTop: 10, fontSize: 12.5, color: C.red, padding: '10px 14px', background: C.redBg, border: `1px solid ${C.redBorder}`, borderRadius: 10 }}>
+              {error}
+            </div>
+          )}
         </div>
-        <p style={{ fontSize:14, color:'#3a6e50', marginBottom:20, lineHeight:1.65 }}>
-          Paste the Zillow or Redfin URL into RentalIQ for cap rate, cash flow,
-          wealth projection, AI narrative, and a buy/pass verdict in 30 seconds.
-          The market rent data above automatically anchors the AI's estimate.
-        </p>
-        <Link href="/analyze"
-          style={{ display:'inline-block', background:C.green, color:'#fff', borderRadius:10, padding:'13px 28px', fontSize:14.5, fontWeight:700, textDecoration:'none', letterSpacing:'-0.01em' }}>
-          Analyze a Specific Listing →
-        </Link>
-      </Card>
+      )}
+
+      {/* Results */}
+      {deals !== null && (
+        visibleDeals.length === 0 ? (
+          <div style={{ background: C.soft, border: `1px solid ${C.border}`, borderRadius: 14, padding: '28px 22px', textAlign: 'center' }}>
+            <div style={{ fontSize: 14.5, fontWeight: 700, color: C.text, marginBottom: 6 }}>No active listings found right now</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
+              The AI searched for active listings on Zillow, Redfin, and Realtor.com but couldn't find verified results matching your criteria. Try adjusting your price or beds, or use the platform search links in the market cards below.
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ fontSize: 12, color: C.muted, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ width: 7, height: 7, background: C.green, borderRadius: '50%' }}/>
+              {visibleDeals.length} active listing{visibleDeals.length !== 1 ? 's' : ''} found · Valid for 30 days · Prices may have changed
+            </div>
+            {visibleDeals.map((deal, i) => (
+              <DealCard
+                key={deal.id || deal.listing_url}
+                deal={deal}
+                onFlagSold={id => setFlaggedIds(prev => new Set([...prev, id]))}
+              />
+            ))}
+          </div>
+        )
+      )}
     </div>
   );
 }
 
-// --- Search Form --------------------------------------------------------------
-function SearchForm({ onSubmit, prefilledCity }) {
-  const [city,         setCity]         = useState(prefilledCity || '');
-  const [priceMin,     setPriceMin]     = useState('');
-  const [priceMax,     setPriceMax]     = useState('');
-  const [bedsMin,      setBedsMin]      = useState('2');
-  const [bedsMax,      setBedsMax]      = useState('');
-  const [baths,        setBaths]        = useState('1');
-  const [propTypes,    setPropTypes]    = useState(['sfr']);
-  const [daysOnMarket, setDaysOnMarket] = useState('any');
-  const [sortBy,       setSortBy]       = useState('newest');
-  const [goal,         setGoal]         = useState('balanced');
-  const [cityErr,      setCityErr]      = useState('');
-  const [rentCity,     setRentCity]     = useState('');
-  const debounce = useRef(null);
-
-  const handleCityChange = useCallback((val) => {
-    setCity(val);
-    clearTimeout(debounce.current);
-    debounce.current = setTimeout(() => {
-      if (val.trim().length >= 4) setRentCity(val.trim());
-    }, 900);
-  }, []);
-
-  function togglePropType(key) {
-    setPropTypes(p => p.includes(key) ? p.filter(x => x !== key) : [...p, key]);
-  }
-
-  function handleSubmit() {
-    if (!city.trim()) { setCityErr('City is required'); return; }
-    setCityErr('');
-    onSubmit({ city:city.trim(), priceMin, priceMax, bedsMin, bedsMax, baths, propTypes, daysOnMarket, sortBy, goal });
-  }
-
-  const propTypeOpts = [
-    { key:'sfr',       label:'Single Family',     icon:'🏠' },
-    { key:'mfr',       label:'Multi-Family (2-4)', icon:'🏘️' },
-    { key:'condo',     label:'Condo',              icon:'🏢' },
-    { key:'townhouse', label:'Townhouse',           icon:'🏡' },
-  ];
-
-  const domOpts = [
-    { v:'any', l:'Any' },
-    { v:'1',   l:'1+ day' },
-    { v:'7',   l:'7+ days' },
-    { v:'14',  l:'14+ days' },
-    { v:'30',  l:'30+ days (motivated sellers)' },
-    { v:'60',  l:'60+ days (stale listings)' },
-    { v:'90',  l:'90+ days (best leverage)' },
-  ];
+// ─── Market card (Phase 1) ────────────────────────────────────────────────────
+function MarketCard({ market, rank }) {
+  const [open, setOpen] = useState(false);
+  const cf      = market.cashFlow;
+  const cfColor = cf === null ? C.muted : cf >= 200 ? C.green : cf >= 0 ? C.amber : C.red;
+  const cfLabel = cf === null ? 'N/A' : cf >= 0 ? `+$${cf.toLocaleString()}/mo` : `-$${Math.abs(cf).toLocaleString()}/mo`;
+  const tagline = getMarketTagline(market);
+  const rankColor = rank <= 3 ? C.green : rank <= 8 ? C.amber : C.muted;
+  const rankBg    = rank <= 3 ? C.greenBg : rank <= 8 ? C.amberBg : C.soft;
 
   return (
-    <Card>
-      <div style={{ marginBottom:24 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
-          <div style={{ width:32, height:32, borderRadius:10, background:C.greenBg,
-            border:`1px solid ${C.greenBorder}`, display:'flex', alignItems:'center',
-            justifyContent:'center', flexShrink:0, fontSize:15 }}>🗺️</div>
-          <div>
-            <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.10em',
-              textTransform:'uppercase', color:C.green }}>Market Scout</div>
-            <div style={{ fontSize:10.5, color:C.muted, marginTop:1 }}>Set filters · Get rent data · Open search</div>
-          </div>
-        </div>
-        <div style={{ fontSize:13.5, color:C.muted, lineHeight:1.6 }}>
-          Set your investor filters, then open a pre-filtered search on Zillow and Redfin in one click.
-          We pull real HUD + Census rent data so you know the numbers before analyzing any listing.
-        </div>
-      </div>
-
-      <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
-
-        {/* City */}
-        <div>
-          <label style={{ fontSize:11, fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase', color:cityErr?C.red:C.muted, display:'block', marginBottom:7 }}>
-            Target City / Market <span style={{ color:C.red }}>*</span>
-          </label>
-          <input type="text" value={city} onChange={e => handleCityChange(e.target.value)}
-            placeholder="e.g. Memphis, TN or Cleveland, OH" autoComplete="off"
-            style={{ ...inputBase, borderColor:cityErr?C.red:C.border, background:cityErr?C.redBg:C.white }}/>
-          {cityErr && <p style={{ fontSize:11, color:C.red, margin:'4px 0 0' }}>{cityErr}</p>}
-          <p style={{ fontSize:11, color:C.muted, margin:'5px 0 0', lineHeight:1.4 }}>Include state abbreviation for best results - e.g. "Kansas City, MO"</p>
-        </div>
-
-        {/* Live rent preview */}
-        {rentCity && <RentStats city={rentCity} beds={parseInt(bedsMin)||2} />}
-
-        {/* Price Range */}
-        <div>
-          <Label>Price Range</Label>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
-            {[
-              { lbl:'Min Price', val:priceMin, set:setPriceMin, ph:'50,000' },
-              { lbl:'Max Price', val:priceMax, set:setPriceMax, ph:'300,000' },
-            ].map(({lbl,val,set,ph}) => (
-              <div key={lbl}>
-                <div style={{ fontSize:10, color:C.muted, marginBottom:5, textTransform:'uppercase', letterSpacing:'0.08em', fontWeight:600 }}>{lbl}</div>
-                <div style={{ position:'relative' }}>
-                  <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', fontSize:14, color:C.muted }}>$</span>
-                  <input type="text" value={val} onChange={e=>set(e.target.value.replace(/[^0-9]/g,''))}
-                    placeholder={ph} style={{ ...inputBase, paddingLeft:26 }}/>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Beds & Baths */}
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }} className="scout-mg">
-          {[
-            { label:'Bedrooms (min)', opts:['Any','1','2','3','4'], val:bedsMin, set:setBedsMin },
-            { label:'Bathrooms (min)', opts:['Any','1','1.5','2','3'], val:baths, set:setBaths },
-          ].map(({label,opts,val,set},j) => (
-            <div key={j}>
-              <Label>{label}</Label>
-              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-                {opts.map(v => {
-                  const a = val === (v==='Any'?'':v);
-                  return (
-                    <button key={v} onClick={() => set(v==='Any'?'':v)}
-                      style={{ flex:'1 1 auto', minWidth:42, padding:'9px 6px', borderRadius:10,
-                        border:`1.5px solid ${a?C.green:C.border}`, background:a?C.greenBg:C.white,
-                        color:a?C.green:C.text, fontWeight:a?700:400, fontSize:13,
-                        cursor:'pointer', fontFamily:'inherit', transition:'all 0.15s' }}>
-                      {v}
-                    </button>
-                  );
-                })}
-              </div>
+    <div className="riq-lift" style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, overflow: 'hidden', animation: 'riq-fadeup 0.4s ease both' }}>
+      <div style={{ padding: '18px 20px 0' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: rankColor, background: rankBg, border: `1px solid ${rankColor}30`, borderRadius: 7, padding: '2px 8px', flexShrink: 0 }}>#{rank}</span>
+              <h2 style={{ margin: 0, fontFamily: "'Libre Baskerville',Georgia,serif", fontSize: 19, fontWeight: 700, color: C.text, letterSpacing: '-0.02em', lineHeight: 1.1 }}>
+                {market.city}
+                <span style={{ fontFamily: "'DM Sans',system-ui,sans-serif", fontWeight: 500, fontSize: 13, color: C.muted, marginLeft: 6 }}>{market.state}</span>
+              </h2>
             </div>
-          ))}
-        </div>
-
-        {/* Property Type */}
-        <div>
-          <Label>Property Type</Label>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-            {propTypeOpts.map(p => {
-              const a = propTypes.includes(p.key);
-              return (
-                <button key={p.key} onClick={() => togglePropType(p.key)}
-                  style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 14px', borderRadius:10,
-                    border:`1.5px solid ${a?C.green:C.border}`, background:a?C.greenBg:C.white,
-                    cursor:'pointer', fontFamily:'inherit', textAlign:'left', transition:'all 0.15s' }}>
-                  <span style={{ fontSize:18 }}>{p.icon}</span>
-                  <span style={{ fontSize:13, fontWeight:a?700:400, color:a?C.green:C.text }}>{p.label}</span>
-                  {a && <span style={{ marginLeft:'auto', color:C.green, fontSize:12 }}>✓</span>}
-                </button>
-              );
-            })}
+            <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.4 }}>{tagline}</div>
+          </div>
+          <div style={{ flexShrink: 0, textAlign: 'center' }}>
+            <div style={{ fontSize: 24, fontWeight: 800, color: C.green, lineHeight: 1 }}>{market.score}</div>
+            <div style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: C.muted, marginTop: 2 }}>Score</div>
           </div>
         </div>
-
-        {/* Days on Market */}
-        <div>
-          <Label>Days on Market
-            <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10, color:C.muted }}> - longer = more motivated sellers</span>
-          </Label>
-          <select value={daysOnMarket} onChange={e=>setDaysOnMarket(e.target.value)}
-            style={{ ...inputBase, cursor:'pointer' }}>
-            {domOpts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
-          </select>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 7, marginBottom: 12 }}>
+          <Pill label="Cap Rate" value={`${market.capRate}%`} color={market.capRate >= 7 ? C.green : market.capRate >= 5.5 ? C.amber : C.text}/>
+          <Pill label="Est. Cash Flow" value={cfLabel} color={cfColor}/>
+          <Pill label="Appreciation" value={`${market.appreciationRate}%/yr`} color={C.blue}/>
         </div>
-
-        {/* Investor Goal — feeds Live Market Intel */}
-        <div>
-          <Label>Investor Goal
-            <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10, color:C.muted }}> — used to personalize market intelligence</span>
-          </Label>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, gap: 8 }}>
+          <LandlordBadge score={market.landlordScore}/>
+          <span style={{ fontSize: 11, color: C.muted }}>{market.region}</span>
+        </div>
+        <ScoreBar value={market.score}/>
+      </div>
+      <div style={{ padding: '12px 20px', display: 'flex', gap: 7, flexWrap: 'wrap', borderTop: `1px solid ${C.border}`, marginTop: 12 }}>
+        {[
+          { href: market.zillowUrl, label: 'Zillow', bg: '#006AFF', shadow: 'rgba(0,106,255,0.25)' },
+          { href: market.redfinUrl, label: 'Redfin', bg: '#CC0000', shadow: 'rgba(204,0,0,0.22)' },
+          { href: market.realtorUrl, label: 'Realtor.com', bg: C.white, color: '#D9232D', border: '1.5px solid #D9232D' },
+        ].map(btn => (
+          <a key={btn.label} href={btn.href} target="_blank" rel="noopener noreferrer"
+            style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+              background: btn.bg, color: btn.color || '#fff', border: btn.border || 'none', borderRadius: 9,
+              padding: '9px 10px', textDecoration: 'none', fontWeight: 700, fontSize: 12,
+              fontFamily: "'DM Sans',system-ui,sans-serif",
+              boxShadow: btn.shadow ? `0 2px 8px ${btn.shadow}` : 'none', transition: 'opacity 0.15s' }}
+            onMouseEnter={e => e.currentTarget.style.opacity = '0.82'}
+            onMouseLeave={e => e.currentTarget.style.opacity = '1'}>
+            {btn.label}
+            <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M2 8L8 2M8 2H4M8 2V6" stroke={btn.color || 'white'} strokeWidth="1.5" strokeLinecap="round"/></svg>
+          </a>
+        ))}
+      </div>
+      <div style={{ borderTop: `1px solid ${C.border}` }}>
+        <button onClick={() => setOpen(o => !o)}
+          style={{ width: '100%', padding: '10px 20px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: "'DM Sans',system-ui,sans-serif", fontSize: 12, fontWeight: 600, color: C.muted, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          Market details
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>
+            <path d="M3 5l4 4 4-4" stroke={C.muted} strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        </button>
+        <div style={{ maxHeight: open ? 360 : 0, overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)' }}>
+          <div style={{ padding: '4px 20px 16px', display: 'flex', flexDirection: 'column', gap: 9 }}>
             {[
-              { v:'cashflow',     l:'Cash Flow',     icon:'💰', desc:'Max monthly income' },
-              { v:'appreciation', l:'Appreciation',  icon:'📈', desc:'Long-term equity' },
-              { v:'balanced',     l:'Balanced',      icon:'⚖️',  desc:'Both cash & growth' },
-              { v:'tax',          l:'Tax Advantage', icon:'🧾', desc:'Depreciation & 1031' },
-            ].map(o => {
-              const a = goal === o.v;
-              return (
-                <button key={o.v} onClick={() => setGoal(o.v)}
-                  style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', borderRadius:10,
-                    border:`1.5px solid ${a?C.green:C.border}`, background:a?C.greenBg:C.white,
-                    cursor:'pointer', fontFamily:'inherit', textAlign:'left', transition:'all 0.15s' }}>
-                  <span style={{ fontSize:16 }}>{o.icon}</span>
-                  <div>
-                    <div style={{ fontSize:12.5, fontWeight:a?700:500, color:a?C.green:C.text }}>{o.l}</div>
-                    <div style={{ fontSize:10.5, color:C.muted }}>{o.desc}</div>
-                  </div>
-                  {a && <span style={{ marginLeft:'auto', color:C.green, fontSize:12 }}>✓</span>}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Sort */}
-        <div>
-          <Label>Sort Results By</Label>
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-            {[{v:'newest',l:'Newest'},{v:'price_asc',l:'Price ↑'},{v:'price_desc',l:'Price ↓'}].map(o => (
-              <button key={o.v} onClick={() => setSortBy(o.v)}
-                style={{ padding:'8px 16px', borderRadius:100,
-                  border:`1.5px solid ${sortBy===o.v?C.text:C.border}`,
-                  background:sortBy===o.v?C.text:C.white, color:sortBy===o.v?'#fff':C.text,
-                  fontWeight:sortBy===o.v?600:400, fontSize:12.5,
-                  cursor:'pointer', fontFamily:'inherit', transition:'all 0.15s' }}>
-                {o.l}
-              </button>
+              { l: 'Median Price',    v: market.medianPrice ? `$${market.medianPrice.toLocaleString()}` : 'N/A' },
+              { l: 'HUD 2BR Rent',    v: market.rent2br ? `$${market.rent2br.toLocaleString()}/mo` : 'N/A' },
+              { l: 'Multi-fam Cap',   v: market.capRateMfr ? `${market.capRateMfr}%` : 'N/A' },
+              { l: 'Property Tax',    v: `${market.taxRate}%/yr` },
+              { l: 'Insurance Rate',  v: `${market.insRate}%/yr` },
+              { l: 'Cap Rate Source', v: market.capSource },
+            ].map((row, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ fontSize: 11.5, color: C.muted }}>{row.l}</span>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: C.text, textAlign: 'right' }}>{row.v}</span>
+              </div>
             ))}
           </div>
         </div>
-
-        <button onClick={handleSubmit}
-          style={{ background:C.green, border:'none', borderRadius:12, padding:'15px', fontSize:14.5, fontWeight:700,
-            color:'#fff', cursor:'pointer', fontFamily:'inherit', width:'100%', letterSpacing:'-0.01em', marginTop:8,
-            boxShadow:'0 4px 16px rgba(22,102,56,0.3)', transition:'opacity 0.15s, transform 0.15s' }}
-          onMouseEnter={e=>{e.currentTarget.style.opacity='0.9';e.currentTarget.style.transform='translateY(-1px)'}}
-          onMouseLeave={e=>{e.currentTarget.style.opacity='1';e.currentTarget.style.transform=''}}>
-          Find Investment Properties →
-        </button>
       </div>
-    </Card>
+    </div>
   );
 }
 
-// --- Main ---------------------------------------------------------------------
+// ─── Filter panel ─────────────────────────────────────────────────────────────
+function FilterPanel({ filters, onChange }) {
+  function set(k, v) { onChange({ ...filters, [k]: v }); }
+  const goalOpts = [
+    { v: 'cashflow', l: 'Max Cash Flow', sub: 'Highest cap rates now' },
+    { v: 'appreciation', l: 'Appreciation', sub: 'Long-term equity' },
+    { v: 'balanced', l: 'Balanced', sub: 'Cash flow + growth' },
+  ];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: C.muted, marginBottom: 9 }}>Goal</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {goalOpts.map(o => {
+            const active = filters.goal === o.v;
+            return (
+              <button key={o.v} onClick={() => set('goal', o.v)}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10,
+                  border: `1.5px solid ${active ? C.green : C.border}`, background: active ? C.greenBg : C.white,
+                  cursor: 'pointer', fontFamily: "'DM Sans',system-ui,sans-serif", textAlign: 'left', transition: 'all 0.15s' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: active ? 700 : 500, color: active ? C.green : C.text }}>{o.l}</div>
+                  <div style={{ fontSize: 10.5, color: C.muted }}>{o.sub}</div>
+                </div>
+                {active && <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2.5 7l3.5 3.5 6-6" stroke={C.green} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: C.muted, marginBottom: 9 }}>Max price</div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {[150000, 250000, 350000, 500000].map(v => {
+            const a = filters.priceMax === v;
+            return (
+              <button key={v} onClick={() => set('priceMax', v)}
+                style={{ flex: '1 1 auto', padding: '8px 6px', borderRadius: 9, border: `1.5px solid ${a ? C.green : C.border}`,
+                  background: a ? C.greenBg : C.white, color: a ? C.green : C.muted, fontWeight: a ? 700 : 400,
+                  fontSize: 12, cursor: 'pointer', fontFamily: "'DM Sans',system-ui,sans-serif", transition: 'all 0.15s' }}>
+                ${v / 1000}k
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: C.muted, marginBottom: 9 }}>Bedrooms</div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {[2, 3, 4].map(v => {
+            const a = filters.beds === v;
+            return (
+              <button key={v} onClick={() => set('beds', v)}
+                style={{ flex: 1, padding: '9px 6px', borderRadius: 9, border: `1.5px solid ${a ? C.green : C.border}`,
+                  background: a ? C.greenBg : C.white, color: a ? C.green : C.muted, fontWeight: a ? 700 : 400,
+                  fontSize: 13, cursor: 'pointer', fontFamily: "'DM Sans',system-ui,sans-serif", transition: 'all 0.15s' }}>
+                {v}BR
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: C.muted, marginBottom: 9 }}>Property type</div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {[{ v: 'sfr', l: 'SFR' }, { v: 'mfr', l: 'Multi' }, { v: 'any', l: 'Any' }].map(o => {
+            const a = filters.propType === o.v;
+            return (
+              <button key={o.v} onClick={() => set('propType', o.v)}
+                style={{ flex: 1, padding: '8px 6px', borderRadius: 9, border: `1.5px solid ${a ? C.green : C.border}`,
+                  background: a ? C.greenBg : C.white, color: a ? C.green : C.muted, fontWeight: a ? 700 : 400,
+                  fontSize: 12, cursor: 'pointer', fontFamily: "'DM Sans',system-ui,sans-serif", transition: 'all 0.15s' }}>
+                {o.l}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: C.muted, marginBottom: 6 }}>
+          Min cap rate <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>({filters.minCapRate}%+)</span>
+        </div>
+        <input type="range" min="0" max="8" step="0.5" value={filters.minCapRate}
+          onChange={e => set('minCapRate', parseFloat(e.target.value))}
+          style={{ width: '100%', accentColor: C.green }}/>
+      </div>
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: C.muted, marginBottom: 6 }}>
+          Min landlord score <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>({filters.minLandlord}+)</span>
+        </div>
+        <input type="range" min="0" max="90" step="10" value={filters.minLandlord}
+          onChange={e => set('minLandlord', parseInt(e.target.value))}
+          style={{ width: '100%', accentColor: C.green }}/>
+      </div>
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: C.muted, marginBottom: 8 }}>Region</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+          {['all', 'Southeast', 'South', 'Midwest', 'Northeast', 'West', 'Southwest'].map(r => {
+            const a = filters.region === r;
+            return (
+              <button key={r} onClick={() => set('region', r)}
+                style={{ padding: '5px 10px', borderRadius: 100, border: `1.5px solid ${a ? C.text : C.border}`,
+                  background: a ? C.text : C.white, color: a ? '#fff' : C.muted, fontWeight: a ? 600 : 400,
+                  fontSize: 11, cursor: 'pointer', fontFamily: "'DM Sans',system-ui,sans-serif", transition: 'all 0.15s' }}>
+                {r === 'all' ? 'All' : r}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
 export default function Scout() {
-  const [stage,   setStage]   = useState('form');
-  const [filters, setFilters] = useState(null);
-  const [prefilledCity, setPrefilledCity] = useState('');
   const { data: session, status: authStatus } = useSession();
   const tokens = session?.user?.tokens ?? 0;
 
-  const handleSubmitFilters = useCallback((f) => {
-    setFilters(f);
-    setStage('results');
-  }, []);
+  const [filters, setFilters] = useState({
+    priceMax: 350000, beds: 3, goal: 'cashflow',
+    region: 'all', minCapRate: 0, minLandlord: 0, propType: 'sfr',
+  });
+  const [activeTab,   setActiveTab]   = useState('markets'); // 'markets' | 'deals'
+  const [dealsCount,  setDealsCount]  = useState(0);
 
-  useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    const city = p.get('city');
-    if (city) setPrefilledCity(city);
-    if (p.get('goal') || p.get('budget') || city) window.history.replaceState({}, '', '/scout');
-  }, []);
+  const markets = useMemo(() => getRankedMarkets(filters), [filters]);
+
+  const activeFilterCount = [
+    filters.priceMax !== 350000, filters.beds !== 3, filters.goal !== 'cashflow',
+    filters.region !== 'all', filters.minCapRate > 0, filters.minLandlord > 0, filters.propType !== 'sfr',
+  ].filter(Boolean).length;
 
   return (
     <>
       <Head>
-        <title>RentalIQ Market Search - Find Rental Properties</title>
-        <meta name="description" content="Search for investment properties with investor-grade filters. Get real HUD + Census rent data for your target market, then open targeted searches on Zillow and Redfin."/>
-        <meta property="og:title" content="RentalIQ Market Search - Find Rental Properties"/>
-        <meta property="og:type" content="website"/>
-        <meta name="twitter:card" content="summary"/>
+        <title>RentalIQ Scout — Find Rental Investment Deals</title>
+        <meta name="description" content="Discover the best US rental investment markets. AI-powered deal discovery finds active listings on Zillow, Redfin, and Realtor.com — ranked by cap rate, cash flow, and landlord-friendliness."/>
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
       </Head>
       <style>{`
-        @keyframes spin      { to { transform:rotate(360deg) } }
-        @keyframes fadeup    { from { opacity:0;transform:translateY(16px) } to { opacity:1;transform:translateY(0) } }
-        @keyframes riq-pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.65)} }
-        * { box-sizing:border-box }
-        input:focus, select:focus { border-color:#2d7a4f!important; outline:none!important }
-        @media(max-width:600px) { .scout-mg { grid-template-columns:1fr!important } }
+        @keyframes riq-fadeup { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes riq-spin   { to{transform:rotate(360deg)} }
+        *{box-sizing:border-box}
+        .riq-lift{transition:transform 0.22s ease,box-shadow 0.22s ease;box-shadow:0 1px 2px rgba(0,0,0,0.05),0 2px 12px rgba(0,0,0,0.06)}
+        .riq-lift:hover{transform:translateY(-2px);box-shadow:0 8px 32px rgba(0,0,0,0.09)!important}
+        input[type=range]{-webkit-appearance:none;height:4px;border-radius:2px;background:#eaeaef;outline:none;width:100%}
+        input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:#166638;cursor:pointer}
+        input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:#166638;cursor:pointer;border:none}
+        @media(max-width:900px){.scout-layout{grid-template-columns:1fr!important}.scout-aside{display:none!important}}
+        @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
       `}</style>
 
-      <div style={{ background:C.bg, minHeight:'100vh', fontFamily:"'DM Sans',system-ui,sans-serif" }}>
+      <div style={{ background: C.bg, minHeight: '100vh', fontFamily: "'DM Sans',system-ui,sans-serif" }}>
 
-        {/* Nav — full-width, outside content wrapper */}
-        <nav style={{ position:'sticky', top:0, zIndex:100, background:'rgba(245,245,248,0.88)', backdropFilter:'blur(12px)', WebkitBackdropFilter:'blur(12px)', borderBottom:`1px solid ${C.border}`, padding:'0 32px' }}>
-          <div style={{ maxWidth:1080, margin:'0 auto', display:'flex', alignItems:'center', justifyContent:'space-between', height:52 }}>
-            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-              <Link href="/analyze" style={{ display:'flex', alignItems:'center', gap:8, textDecoration:'none' }}>
-                <div style={{ width:8, height:8, background:C.green, borderRadius:'50%' }}/>
-                <span style={{ fontSize:13, fontWeight:700, letterSpacing:'-0.01em', color:C.text }}>RentalIQ</span>
-              </Link>
-            </div>
-            <div style={{ display:'flex', alignItems:'center', gap:16 }}>
-              <div style={{ display:'inline-flex', background:C.soft, borderRadius:10, padding:3, gap:3 }}>
-                <Link href="/analyze" style={{ display:'block', padding:'5px 14px', borderRadius:8, fontSize:12.5, fontWeight:700, color:C.muted, textDecoration:'none', whiteSpace:'nowrap' }}>
-                  Analyze a Listing
-                </Link>
-                <span style={{ display:'block', padding:'5px 14px', borderRadius:8, background:C.white, fontSize:12.5, fontWeight:700, color:C.text, boxShadow:C.shadowSm, whiteSpace:'nowrap' }}>
-                  Market Search
-                </span>
+        {/* Nav */}
+        <nav style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(245,245,248,0.9)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderBottom: `1px solid ${C.border}`, padding: '0 28px' }}>
+          <div style={{ maxWidth: 1160, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 52 }}>
+            <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
+              <div style={{ width: 8, height: 8, background: C.green, borderRadius: '50%' }}/>
+              <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: C.text }}>RentalIQ</span>
+            </Link>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ display: 'inline-flex', background: C.soft, borderRadius: 10, padding: 3, gap: 3 }}>
+                <Link href="/analyze" style={{ display: 'block', padding: '5px 14px', borderRadius: 8, fontSize: 12.5, fontWeight: 500, color: C.muted, textDecoration: 'none' }}>Analyze</Link>
+                <span style={{ display: 'block', padding: '5px 14px', borderRadius: 8, background: C.white, fontSize: 12.5, fontWeight: 700, color: C.text, boxShadow: C.shadowSm }}>Scout</span>
               </div>
-              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
               {authStatus === 'authenticated' ? (
-                <>
-                  <Link href="/dashboard" style={{ fontSize:12, color:C.muted, textDecoration:'none', padding:'5px 12px', border:`1px solid ${C.border}`, borderRadius:8, fontWeight:600, transition:'border-color 0.15s' }}>My Deals</Link>
-                  <a href="/analyze" style={{ fontSize:12, fontWeight:700, color:tokens<=0?C.red:tokens<=2?C.amber:C.green, padding:'5px 12px', border:`1px solid ${tokens<=0?C.red:tokens<=2?C.amber:C.green}`, borderRadius:8, background:C.white, textDecoration:'none', cursor:'pointer' }} title="Buy more tokens">
-                    {tokens} token{tokens!==1?'s':''}
-                  </a>
-                </>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Link href="/dashboard" style={{ fontSize: 12, color: C.muted, textDecoration: 'none', padding: '5px 12px', border: `1px solid ${C.border}`, borderRadius: 8 }}>My Deals</Link>
+                  <span style={{ fontSize: 12, color: tokens <= 0 ? C.red : tokens <= 2 ? C.amber : C.green, padding: '5px 12px', border: `1px solid ${tokens <= 0 ? C.redBorder : tokens <= 2 ? C.amberBorder : C.greenBorder}`, borderRadius: 8, background: C.white, fontWeight: 700 }}>
+                    {tokens} token{tokens !== 1 ? 's' : ''}
+                  </span>
+                </div>
               ) : (
-                <Link href="/auth" style={{ padding:'5px 14px', borderRadius:8, fontSize:12.5, fontWeight:600, color:'#fff', background:C.green, textDecoration:'none' }}>
-                  Sign In
-                </Link>
+                <Link href="/auth" style={{ padding: '6px 16px', borderRadius: 9, fontSize: 12.5, fontWeight: 600, color: '#fff', background: C.green, textDecoration: 'none' }}>Sign In</Link>
               )}
-              </div>
             </div>
           </div>
         </nav>
 
-        <div style={{ maxWidth:720, margin:'0 auto', padding:'0 20px 80px', animation:'fadeup 0.5s ease both' }}>
-
-          {/* Header */}
-          <header style={{ textAlign:'center', padding:'52px 0 36px', animation:'fadeup 0.5s ease 0.05s both' }}>
-            <div style={{ display:'inline-flex', alignItems:'center', gap:8, marginBottom:14, fontSize:11, fontWeight:600, letterSpacing:'0.12em', color:C.muted, textTransform:'uppercase' }}>
-              <div style={{ width:7, height:7, background:C.green, borderRadius:'50%' }}/>
-              RentalIQ Scout
+        {/* Hero */}
+        <header style={{ padding: '44px 28px 32px', background: `radial-gradient(ellipse 900px 400px at 50% 0%, rgba(22,102,56,0.07) 0%, transparent 70%), ${C.bg}`, borderBottom: `1px solid ${C.border}`, animation: 'riq-fadeup 0.5s ease both' }}>
+          <div style={{ maxWidth: 1160, margin: '0 auto' }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 14, padding: '4px 12px', background: C.white, border: `1px solid ${C.border}`, borderRadius: 100, boxShadow: C.shadowSm }}>
+              <div style={{ width: 6, height: 6, background: C.green, borderRadius: '50%' }}/>
+              <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.10em', color: C.muted, textTransform: 'uppercase' }}>Ranked · Scored · Live deal discovery</span>
             </div>
-            <h1 style={{ fontFamily:"'Libre Baskerville',Georgia,serif", fontSize:'clamp(28px,5vw,48px)', fontWeight:700, letterSpacing:'-0.03em', lineHeight:1.1, marginBottom:12, color:C.text }}>
-              Find your next{' '}
-              <em style={{ fontStyle:'italic', color:C.green, fontWeight:400 }}>rental property</em>
+            <h1 style={{ margin: '0 0 12px', fontFamily: "'Libre Baskerville',Georgia,serif", fontSize: 'clamp(26px,4vw,50px)', fontWeight: 700, letterSpacing: '-0.03em', lineHeight: 1.05, color: C.text }}>
+              Where are the <em style={{ fontStyle: 'italic', color: C.green, fontWeight: 400 }}>best rental deals</em> right now?
             </h1>
-            <p style={{ fontSize:15.5, color:C.muted, lineHeight:1.65, maxWidth:500, margin:'0 auto' }}>
-              Set investor-grade filters and get real HUD + Census rent data for your market.
-              We open a targeted search on Zillow and Redfin — then you paste the listing into RentalIQ to run the full analysis.
+            <p style={{ margin: '0 0 22px', fontSize: 15.5, color: C.muted, lineHeight: 1.65, maxWidth: 560 }}>
+              Market intelligence from HUD, CBRE, and Eviction Lab data. AI-powered deal discovery finds real active listings.
+              Find a deal, then run the full RentalIQ analysis in one click.
             </p>
-          </header>
-
-          {stage === 'form' && (
-            <div style={{animation:'fadeup 0.5s ease 0.1s both'}}>
-              <SearchForm onSubmit={handleSubmitFilters} prefilledCity={prefilledCity} />
+            {/* Tab switcher */}
+            <div style={{ display: 'inline-flex', background: C.soft, borderRadius: 11, padding: 4, gap: 4 }}>
+              {[
+                { v: 'markets', l: `Market Intelligence`, sub: `${markets.length} markets` },
+                { v: 'deals',   l: 'AI Deal Discovery',  sub: dealsCount > 0 ? `${dealsCount} deals found` : '1 free search' },
+              ].map(tab => {
+                const active = activeTab === tab.v;
+                return (
+                  <button key={tab.v} onClick={() => setActiveTab(tab.v)}
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', padding: '9px 18px', borderRadius: 8,
+                      background: active ? C.white : 'none', border: 'none',
+                      cursor: 'pointer', fontFamily: "'DM Sans',system-ui,sans-serif",
+                      boxShadow: active ? C.shadowSm : 'none', transition: 'all 0.15s' }}>
+                    <span style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? C.text : C.muted }}>{tab.l}</span>
+                    <span style={{ fontSize: 10.5, color: active ? C.green : C.muted, fontWeight: 600 }}>{tab.sub}</span>
+                  </button>
+                );
+              })}
             </div>
-          )}
-          {stage === 'results' && filters && (
-            <ResultsPanel filters={filters} onBack={() => setStage('form')} />
-          )}
+          </div>
+        </header>
+
+        {/* Body */}
+        <div style={{ maxWidth: 1160, margin: '0 auto', padding: '28px 28px 80px' }}>
+          <div className="scout-layout" style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 24, alignItems: 'start' }}>
+
+            {/* Sidebar */}
+            <aside className="scout-aside" style={{ position: 'sticky', top: 68 }}>
+              <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: '20px 18px', boxShadow: C.shadowSm }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: C.muted }}>Refine markets</div>
+                  {activeFilterCount > 0 && (
+                    <button onClick={() => setFilters({ priceMax: 350000, beds: 3, goal: 'cashflow', region: 'all', minCapRate: 0, minLandlord: 0, propType: 'sfr' })}
+                      style={{ fontSize: 11, color: C.muted, background: 'none', border: 'none', cursor: 'pointer', fontFamily: "'DM Sans',system-ui,sans-serif", textDecoration: 'underline' }}>
+                      Reset ({activeFilterCount})
+                    </button>
+                  )}
+                </div>
+                <FilterPanel filters={filters} onChange={setFilters}/>
+              </div>
+              <div style={{ marginTop: 12, padding: '12px 14px', background: C.soft, borderRadius: 12, border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: C.muted, marginBottom: 5 }}>Data sources</div>
+                <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+                  Cap rates: CBRE/JLL via HUD SAFMR + Census ACS<br/>
+                  Landlord scores: Eviction Lab + NCSL<br/>
+                  Tax: Tax Foundation 2024<br/>
+                  Appreciation: 5yr FHFA CAGR<br/>
+                  Deals: Gemini AI + live Google search
+                </div>
+              </div>
+            </aside>
+
+            {/* Main content */}
+            <div>
+              {activeTab === 'deals' && (
+                <DealSearchPanel
+                  session={session}
+                  filters={filters}
+                  onDealsLoaded={d => setDealsCount(d.length)}
+                />
+              )}
+
+              {/* Market cards — always shown under deals tab too */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {activeTab === 'markets' && (
+                  <div style={{ background: C.amberBg, border: `1px solid ${C.amberBorder}`, borderRadius: 12, padding: '11px 15px', display: 'flex', alignItems: 'flex-start', gap: 9 }}>
+                    <svg width="14" height="14" viewBox="0 0 15 15" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
+                      <path d="M7.5 1.5L13.5 13H1.5L7.5 1.5Z" stroke={C.amber} strokeWidth="1.4" fill="none"/>
+                      <path d="M7.5 6v3M7.5 10.5v.5" stroke={C.amber} strokeWidth="1.4" strokeLinecap="round"/>
+                    </svg>
+                    <div style={{ fontSize: 11.5, color: C.amber, lineHeight: 1.55 }}>
+                      <strong>Investor estimates.</strong> Cap rates and cash flow are modeled from public data at 20% down, 7% rate, market-average expenses.
+                      Always analyze specific listings before investing.
+                    </div>
+                  </div>
+                )}
+                {activeTab === 'markets' && markets.length === 0 && (
+                  <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: '36px 24px', textAlign: 'center' }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 8 }}>No markets match these filters</div>
+                    <button onClick={() => setFilters({ priceMax: 350000, beds: 3, goal: 'cashflow', region: 'all', minCapRate: 0, minLandlord: 0, propType: 'sfr' })}
+                      style={{ padding: '10px 22px', border: 'none', borderRadius: 10, background: C.green, color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: "'DM Sans',system-ui,sans-serif" }}>
+                      Reset filters
+                    </button>
+                  </div>
+                )}
+                {activeTab === 'markets' && markets.map((m, i) => (
+                  <MarketCard key={m.key} market={m} rank={i + 1}/>
+                ))}
+                {activeTab === 'deals' && markets.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: C.muted, marginBottom: 12 }}>
+                      Top markets to search manually
+                    </div>
+                    {markets.slice(0, 5).map((m, i) => (
+                      <div key={m.key} style={{ marginBottom: 12 }}>
+                        <MarketCard market={m} rank={i + 1}/>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Bottom CTA */}
+              {activeTab === 'markets' && markets.length > 0 && (
+                <div style={{ marginTop: 20, background: C.greenBg, border: `1.5px solid ${C.greenBorder}`, borderRadius: 16, padding: '24px', textAlign: 'center' }}>
+                  <div style={{ fontFamily: "'Libre Baskerville',Georgia,serif", fontSize: 20, fontWeight: 700, color: C.text, marginBottom: 8 }}>Found a listing you like?</div>
+                  <div style={{ fontSize: 13.5, color: '#3a6e50', marginBottom: 18, lineHeight: 1.65 }}>
+                    Paste any Zillow or Redfin URL into RentalIQ for a full cap rate, cash flow, IRR, and buy/pass verdict in 30 seconds.
+                  </div>
+                  <Link href="/analyze" style={{ display: 'inline-block', background: C.green, color: '#fff', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 700, textDecoration: 'none', boxShadow: '0 4px 16px rgba(22,102,56,0.3)' }}>
+                    Analyze a Listing →
+                  </Link>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
-        <footer style={{ textAlign:'center', padding:'16px 0 32px', fontSize:12, color:C.muted, borderTop:`1px solid ${C.border}` }}>
-          RentalIQ Scout · Rent data: HUD FMR + Census ACS · Not financial advice
+        <footer style={{ textAlign: 'center', padding: '16px 0 32px', fontSize: 11.5, color: C.muted, borderTop: `1px solid ${C.border}` }}>
+          RentalIQ Scout · Cap rates: CBRE/JLL · Landlord scores: Eviction Lab · Deals: Gemini AI search grounding · Not financial advice
         </footer>
       </div>
     </>
