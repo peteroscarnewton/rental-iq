@@ -33,6 +33,7 @@ import { getServerSession }     from 'next-auth/next';
 import { authOptions }          from './auth/[...nextauth].js';
 import { rateLimitWithAuth, rateLimit } from '../../lib/rateLimit.js';
 import { getRankedMarkets }     from '../../lib/scoutMarkets.js';
+import { computeConfidence, computeExpiry } from '../../lib/scoutVerify.js';
 
 export const config = { api: { bodyParser: true }, maxDuration: 45 };
 
@@ -213,6 +214,8 @@ async function storeDeals(db, listings, city, state, searchQuery) {
   const rows = listings.map(l => {
     const estimatedRent = estimateRent(l.city || city, l.beds, l.price);
     const metrics       = computeMetrics(l, estimatedRent);
+    const smartExpiry   = computeExpiry(now, l.days_on_market);
+    const initConf      = computeConfidence({ first_seen: now, days_on_market: l.days_on_market, flagged_sold: 0, last_verified: null });
     return {
       city:            l.city || city,
       state:           l.state || state,
@@ -228,8 +231,12 @@ async function storeDeals(db, listings, city, state, searchQuery) {
       source:          l.source,
       days_on_market:  l.days_on_market,
       year_built:      l.year_built,
+      status:          'unverified',
+      confidence:      initConf,
+      last_verified:   null,
+      verify_count:    0,
       first_seen:      now.toISOString(),
-      expires_at:      expiresAt.toISOString(),
+      expires_at:      smartExpiry.toISOString(),
       flagged_sold:    0,
       search_query:    searchQuery,
     };
@@ -269,6 +276,7 @@ export default async function handler(req, res) {
         .select('*')
         .gt('expires_at', new Date().toISOString())
         .lt('flagged_sold', 3)
+        .neq('status', 'likely_sold')
         .order('cap_rate', { ascending: false })
         .limit(20);
 

@@ -62,6 +62,42 @@ function LandlordBadge({ score }) {
   );
 }
 
+// ─── Confidence badge ─────────────────────────────────────────────────────────
+function ConfidenceBadge({ deal }) {
+  const conf    = deal.confidence || 'medium';
+  const status  = deal.status || 'unverified';
+  const daysAgo = deal.first_seen
+    ? Math.round((Date.now() - new Date(deal.first_seen).getTime()) / 86400000)
+    : null;
+  const lastVer = deal.last_verified
+    ? Math.round((Date.now() - new Date(deal.last_verified).getTime()) / 86400000)
+    : null;
+
+  if (status === 'active' && lastVer !== null && lastVer <= 7) {
+    return (
+      <span style={{ fontSize: 10, fontWeight: 700, color: C.green, background: C.greenBg, border: `1px solid ${C.greenBorder}`, borderRadius: 6, padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="none"><circle cx="4" cy="4" r="3" fill={C.green}/></svg>
+        Verified active · {lastVer === 0 ? 'today' : `${lastVer}d ago`}
+      </span>
+    );
+  }
+  if (conf === 'high') return (
+    <span style={{ fontSize: 10, fontWeight: 700, color: C.green, background: C.greenBg, border: `1px solid ${C.greenBorder}`, borderRadius: 6, padding: '2px 8px' }}>
+      High confidence
+    </span>
+  );
+  if (conf === 'medium') return (
+    <span style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, border: `1px solid ${C.amberBorder}`, borderRadius: 6, padding: '2px 8px' }}>
+      Medium confidence
+    </span>
+  );
+  return (
+    <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, background: C.soft, border: `1px solid ${C.border}`, borderRadius: 6, padding: '2px 8px' }}>
+      Verify before acting
+    </span>
+  );
+}
+
 // ─── Source badge ─────────────────────────────────────────────────────────────
 function SourceBadge({ source }) {
   const map = {
@@ -114,6 +150,7 @@ function DealCard({ deal, onFlagSold }) {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5, flexWrap: 'wrap' }}>
               <SourceBadge source={deal.source}/>
+              <ConfidenceBadge deal={deal}/>
               {daysAgo !== null && (
                 <span style={{ fontSize: 10.5, color: daysAgo <= 3 ? C.green : daysAgo <= 14 ? C.amber : C.muted, fontWeight: 600 }}>
                   Found {daysAgo === 0 ? 'today' : `${daysAgo}d ago`}
