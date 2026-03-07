@@ -720,7 +720,7 @@ export default function Scout() {
             <div style={{ display: 'inline-flex', background: C.soft, borderRadius: 11, padding: 4, gap: 4 }}>
               {[
                 { v: 'markets', l: `Market Intelligence`, sub: `${markets.length} markets` },
-                { v: 'deals',   l: 'AI Deal Discovery',  sub: dealsCount > 0 ? `${dealsCount} deals found` : (!isAuthed && guestStatus?.usedScout ? 'Free search used' : '1 free search') },
+                { v: 'deals',   l: 'AI Deal Discovery',  sub: dealsCount > 0 ? `${dealsCount} deals found` : '1 free search' },
               ].map(tab => {
                 const active = activeTab === tab.v;
                 return (
