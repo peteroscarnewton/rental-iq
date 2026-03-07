@@ -3,7 +3,7 @@
 // Both can use Resend: SMTP → smtp://resend:YOUR_KEY@smtp.resend.com:587, REST → RESEND_API_KEY directly.
 import NextAuth from 'next-auth';
 import GoogleProvider from 'next-auth/providers/google';
-import EmailProvider from 'next-auth/providers/email';
+
 import { getSupabaseAdmin } from '../../../lib/supabase';
 
 // We manage users in Supabase manually via callbacks
@@ -43,58 +43,7 @@ export const authOptions = {
       clientId:     process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     }),
-    EmailProvider({
-      server:       process.env.EMAIL_SERVER,
-      from:         process.env.EMAIL_FROM || 'RentalIQ <noreply@rentaliq.app>',
-      sendVerificationRequest: async ({ identifier: email, url, provider }) => {
-        // Branded HTML magic-link email
-        const { createTransport } = await import('nodemailer');
-        const transport = createTransport(provider.server);
-        const baseUrl   = process.env.NEXTAUTH_URL || 'https://rentaliq.app';
 
-        const html = `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#f5f5f8;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif">
-  <div style="max-width:480px;margin:32px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
-    <div style="padding:28px 32px 24px;border-bottom:1px solid #eaeaef">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:0">
-        <div style="width:8px;height:8px;background:#166638;border-radius:50%"></div>
-        <span style="font-size:14px;font-weight:700;color:#0d0d0f;letter-spacing:-0.01em">RentalIQ</span>
-      </div>
-    </div>
-    <div style="padding:32px">
-      <h1 style="font-size:22px;font-weight:700;color:#0d0d0f;margin:0 0 10px;letter-spacing:-0.02em">
-        Your sign-in link
-      </h1>
-      <p style="font-size:14px;color:#72727a;line-height:1.65;margin:0 0 28px">
-        Click the button below to sign in to RentalIQ. This link expires in 24 hours and can only be used once.
-      </p>
-      <a href="\${url}" style="display:block;background:#166638;color:#ffffff;text-decoration:none;border-radius:10px;padding:14px 24px;font-size:14px;font-weight:700;text-align:center;letter-spacing:-0.01em">
-        Sign in to RentalIQ →
-      </a>
-      <p style="font-size:12px;color:#aaa;margin:20px 0 0;text-align:center;line-height:1.6">
-        If you didn't request this, you can safely ignore this email.<br/>
-        Not working? Copy this link: <a href="\${url}" style="color:#166638;word-break:break-all">\${url}</a>
-      </p>
-    </div>
-    <div style="padding:16px 32px;background:#f5f5f8;text-align:center;font-size:11px;color:#aaa;border-top:1px solid #eaeaef">
-      RentalIQ · Not financial advice ·
-      <a href="\${baseUrl}" style="color:#166638;text-decoration:none">rentaliq.app</a>
-    </div>
-  </div>
-</body>
-</html>`;
-
-        await transport.sendMail({
-          to:      email,
-          from:    provider.from,
-          subject: 'Sign in to RentalIQ',
-          html,
-          text:    `Sign in to RentalIQ:\n${url}\n\nIf you didn't request this, ignore this email.`,
-        });
-      },
-    }),
   ],
 
   callbacks: {

@@ -220,6 +220,7 @@ function DealCard({ deal, onFlagSold }) {
 // ─── Deal search panel (Phase 2) ──────────────────────────────────────────────
 function DealSearchPanel({ session, filters, onDealsLoaded }) {
   const [loading,     setLoading]     = useState(false);
+  const [autoLoading, setAutoLoading] = useState(true);   // true while mount fetch is in-flight
   const [deals,       setDeals]       = useState(null);   // null = not searched yet
   const [error,       setError]       = useState(null);
   const [guestStatus, setGuestStatus] = useState(null);   // { allowed, usedScout }
@@ -243,7 +244,7 @@ function DealSearchPanel({ session, filters, onDealsLoaded }) {
   // Auto-load cached deals for the top market on mount
   useEffect(() => {
     const top = getRankedMarkets(filters)[0];
-    if (!top) return;
+    if (!top) { setAutoLoading(false); return; }
     fetch(`/api/scout-deals?city=${encodeURIComponent(top.city)}&state=${top.state}&priceMax=${filters.priceMax}&beds=${filters.beds}`)
       .then(r => r.json())
       .then(d => {
@@ -252,7 +253,8 @@ function DealSearchPanel({ session, filters, onDealsLoaded }) {
           onDealsLoaded?.(d.deals);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setAutoLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function runSearch() {
@@ -330,7 +332,7 @@ function DealSearchPanel({ session, filters, onDealsLoaded }) {
       </div>
 
       {/* Search button or gate */}
-      {error === 'token_used' ? (
+      {(error === 'token_used' || (isAuthed && tokens === 0) || (!isAuthed && guestStatus?.usedScout && error !== 'sign_in')) ? (
         <div style={{ background: C.amberBg, border: `1px solid ${C.amberBorder}`, borderRadius: 14, padding: '20px 22px', marginBottom: 14 }}>
           <div style={{ fontWeight: 700, fontSize: 14.5, color: C.amber, marginBottom: 6 }}>
             {isAuthed ? 'Out of tokens' : 'Free search used'}
@@ -340,7 +342,7 @@ function DealSearchPanel({ session, filters, onDealsLoaded }) {
               ? 'Purchase more tokens to run additional AI searches and analyses.'
               : 'Create a free account for 2 tokens — 1 Scout search + 1 full property analysis.'}
           </div>
-          <Link href={isAuthed ? '/tokens' : '/auth'}
+          <Link href={isAuthed ? '/dashboard' : '/auth'}
             style={{ display: 'inline-block', padding: '10px 22px', borderRadius: 10, background: C.green, color: '#fff', textDecoration: 'none', fontWeight: 700, fontSize: 13, fontFamily: "'DM Sans',system-ui,sans-serif" }}>
             {isAuthed ? 'Buy tokens →' : 'Sign up free →'}
           </Link>
@@ -396,6 +398,12 @@ function DealSearchPanel({ session, filters, onDealsLoaded }) {
       )}
 
       {/* Results */}
+      {autoLoading && deals === null && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '18px 0', color: C.muted, fontSize: 13 }}>
+          <div style={{ width: 14, height: 14, border: '2px solid ' + C.border, borderTopColor: C.green, borderRadius: '50%', animation: 'riq-spin 0.7s linear infinite', flexShrink: 0 }}/>
+          Checking for recent deals in top market…
+        </div>
+      )}
       {deals !== null && (
         visibleDeals.length === 0 ? (
           <div style={{ background: C.soft, border: `1px solid ${C.border}`, borderRadius: 14, padding: '28px 22px', textAlign: 'center' }}>
@@ -454,7 +462,7 @@ function MarketCard({ market, rank }) {
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 7, marginBottom: 12 }}>
-          <Pill label="Cap Rate" value={`${market.capRate}%`} color={market.capRate >= 7 ? C.green : market.capRate >= 5.5 ? C.amber : C.text}/>
+          <Pill label="Mkt Cap Rate" value={`${market.capRate}%`} color={market.capRate >= 7 ? C.green : market.capRate >= 5.5 ? C.amber : C.text}/>
           <Pill label="Est. Cash Flow" value={cfLabel} color={cfColor}/>
           <Pill label="Appreciation" value={`${market.appreciationRate}%/yr`} color={C.blue}/>
         </div>
@@ -712,7 +720,7 @@ export default function Scout() {
             <div style={{ display: 'inline-flex', background: C.soft, borderRadius: 11, padding: 4, gap: 4 }}>
               {[
                 { v: 'markets', l: `Market Intelligence`, sub: `${markets.length} markets` },
-                { v: 'deals',   l: 'AI Deal Discovery',  sub: dealsCount > 0 ? `${dealsCount} deals found` : '1 free search' },
+                { v: 'deals',   l: 'AI Deal Discovery',  sub: dealsCount > 0 ? `${dealsCount} deals found` : (!isAuthed && guestStatus?.usedScout ? 'Free search used' : '1 free search') },
               ].map(tab => {
                 const active = activeTab === tab.v;
                 return (

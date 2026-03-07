@@ -20,11 +20,15 @@ export default async function handler(req, res) {
   const { code } = req.body;
   if (!code || typeof code !== 'string') return res.status(400).json({ error: 'Referral code required.' });
 
+  // Referral codes are 8-char uppercase hex — reject anything else before hitting DB
+  const normalised = code.trim().toUpperCase();
+  if (!/^[0-9A-F]{8}$/.test(normalised)) return res.status(400).json({ error: 'Invalid referral code format.' });
+
   try {
     const db = getSupabaseAdmin();
     const { data, error } = await db.rpc('claim_referral', {
       p_new_user_email: session.user.email,
-      p_referral_code:  code.trim().toUpperCase(),
+      p_referral_code:  normalised,
     });
 
     if (error) throw error;

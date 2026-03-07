@@ -188,11 +188,10 @@ async function selectMarketsForToday(db, allMarkets) {
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
-  const secret = process.env.CRON_SECRET;
-  if (secret) {
-    if (req.headers['authorization'] !== `Bearer ${secret}`) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+  const cronSecret  = process.env.CRON_SECRET;
+  const authHeader  = req.headers['authorization'];
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
   if (!GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY not set' });
 

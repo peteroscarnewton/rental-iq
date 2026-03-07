@@ -15,6 +15,9 @@ export default async function handler(req, res) {
   const { token } = req.query;
   if (!token) return res.status(400).json({ error: 'token required' });
 
+  // Share tokens are exactly 10 lowercase alphanumeric chars — reject anything else
+  if (!/^[a-z0-9]{10}$/.test(token)) return res.status(400).json({ error: 'Invalid token format' });
+
   try {
     const db = getSupabaseAdmin();
     const { data: deal, error } = await db

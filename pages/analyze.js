@@ -669,6 +669,15 @@ export default function Home() {
     }
   }, []);
 
+  // Pre-fill URL field from ?url= query param (e.g. "Analyze this deal" from Scout page)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlParam = params.get('url');
+    if (!urlParam) return;
+    window.history.replaceState({}, '', '/analyze');
+    setField('url')(urlParam);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Show welcome banner for first-time users (≤1 token, never dismissed)
   useEffect(() => {
     if (!isAuthed || tokens === null) return;

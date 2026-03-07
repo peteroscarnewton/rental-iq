@@ -177,18 +177,35 @@ function estimateRent(city, beds, price) {
   return Math.round(price / 150 / 12);
 }
 
+// State-specific annual rates (%) for accurate cap rate / cash flow estimation
+const STATE_TAX_RATES = {
+  AL:0.41,AK:1.04,AZ:0.63,AR:0.64,CA:0.75,CO:0.51,CT:1.79,DE:0.57,FL:0.91,GA:0.91,
+  HI:0.30,ID:0.47,IL:2.08,IN:0.85,IA:1.57,KS:1.41,KY:0.86,LA:0.56,ME:1.09,MD:1.09,
+  MA:1.17,MI:1.32,MN:1.12,MS:0.78,MO:1.01,MT:0.74,NE:1.73,NV:0.55,NH:1.89,NJ:2.23,
+  NM:0.80,NY:1.73,NC:0.82,ND:0.98,OH:1.56,OK:0.90,OR:0.97,PA:1.49,RI:1.53,SC:0.57,
+  SD:1.14,TN:0.67,TX:1.63,UT:0.58,VT:1.83,VA:0.82,WA:0.98,WV:0.59,WI:1.61,WY:0.61,DC:0.55,
+};
+const STATE_INS_RATES = {
+  AL:1.65,AK:0.85,AZ:0.78,AR:1.45,CA:0.80,CO:0.95,CT:1.25,DE:0.80,FL:3.50,GA:1.45,
+  HI:0.35,ID:0.68,IL:1.15,IN:0.95,IA:0.95,KS:1.55,KY:1.25,LA:3.20,ME:0.78,MD:0.92,
+  MA:1.10,MI:1.35,MN:1.15,MS:1.95,MO:1.45,MT:0.85,NE:1.55,NV:0.65,NH:0.75,NJ:1.05,
+  NM:0.85,NY:1.15,NC:1.15,ND:0.95,OH:0.88,OK:2.35,OR:0.62,PA:0.85,RI:1.35,SC:1.55,
+  SD:1.15,TN:1.25,TX:2.20,UT:0.62,VT:0.72,VA:0.78,WA:0.68,WV:0.82,WI:0.92,WY:0.75,DC:0.72,
+};
+
 /**
  * Compute estimated cap rate and cash flow for a listing.
  */
 function computeMetrics(listing, estimatedRent) {
   const { price, state } = listing;
   const rent = estimatedRent;
+  const st = (state || '').toUpperCase();
 
-  // Cap rate: NOI / price
+  // Cap rate: NOI / price — use state-specific rates for accuracy
   const vacancyAmt  = rent * 0.08;
   const mgmtAmt     = (rent - vacancyAmt) * 0.10;
-  const taxAmt      = price * 0.01 / 12;   // ~1% fallback
-  const insAmt      = price * 0.01 / 12;
+  const taxAmt      = price * ((STATE_TAX_RATES[st] || 1.0) / 100) / 12;
+  const insAmt      = price * ((STATE_INS_RATES[st] || 1.0) / 100) / 12;
   const maintAmt    = price * 0.01 / 12;
   const capexAmt    = 150;
   const noiMo       = rent - vacancyAmt - mgmtAmt - taxAmt - insAmt - maintAmt - capexAmt;

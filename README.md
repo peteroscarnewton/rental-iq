@@ -67,3 +67,36 @@ Vercel runs `/api/cron/scout-deals` every morning at 5am UTC automatically. It:
 3. Searches 6 new markets for fresh listings (rotating through all 40+ markets across the week)
 
 No action needed from you. It just runs.
+
+---
+
+## Phase 1 Bug Fixes (Functional Audit)
+
+### Auth page — email sign-in removed
+The magic link / email sign-in form was visible but broken (the backend was already removed). The sign-in page now shows only Google sign-in, which is the only method that works. Copy updated: "2 free tokens — 1 analysis + 1 Scout search."
+
+### Scout — returning guest UX fixed
+Guests who already used their free AI search now see the sign-up CTA immediately when they open the Scout AI tab — instead of a grey disabled button with no explanation. The tab subtitle also updates from "1 free search" to "Free search used" once consumed.
+
+### Schema — default tokens corrected
+The Supabase schema default for new users was `tokens = 1` but the app creates accounts with `tokens = 2`. Schema now matches.
+
+---
+
+## Phase 2 Bug Fixes (Logical Audit)
+
+### scout-deals.js — state-specific expense rates
+Cap rate and cash flow calculations for AI-discovered deals were using a hardcoded 1% for both property tax and insurance regardless of state. For Florida (3.5% insurance) and Texas (2.2% insurance), this produced significantly overstated cap rates. Now uses the same state-specific rate tables as the rest of the app.
+
+### Scout market cards — "Cap Rate" relabeled
+The "Cap Rate" pill on market cards showed the CBRE market benchmark (what investors in that market achieve), not the cap rate of a specific deal. Relabeled to "Mkt Cap Rate" to avoid confusion with the deal-level cap rate shown on AI-discovered listings.
+
+---
+
+## Phase 3 Bug Fixes (Syntax Audit)
+
+### .env.example — email section corrected
+`EMAIL_SERVER` and `EMAIL_FROM` were listed as required for "magic-link sign-in" — a feature that was already removed. Both variables are now commented out and the section is marked OPTIONAL, describing them as reserved for future email features only.
+
+### No breaking syntax errors found
+Full scan of all 50+ JS/JSX files across pages, API routes, lib, and components. All component references resolved, all imports valid, all API routes have `export default` and proper error handling. Silent `.catch(() => {})` calls reviewed — all are intentional fallbacks for optional enrichment data.

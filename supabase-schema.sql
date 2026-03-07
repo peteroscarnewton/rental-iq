@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
   email               TEXT        UNIQUE NOT NULL,
   name                TEXT,
   image               TEXT,
-  tokens              INTEGER     NOT NULL DEFAULT 1,
+  tokens              INTEGER     NOT NULL DEFAULT 2,
   stripe_customer_id  TEXT        UNIQUE,
   referral_code       TEXT        UNIQUE,
   referred_by         TEXT,

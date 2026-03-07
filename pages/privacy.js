@@ -30,13 +30,13 @@ export default function Privacy() {
         <p style={{fontSize:13,color:C.muted,marginBottom:40}}>Last updated: January 2025</p>
 
         {[
-          {h:'What We Collect', body:'When you use RentalIQ, we collect: your email address (for account creation and magic link auth), property data you submit for analysis (listing URLs, price, rent, location), your analysis history and results, and basic usage metadata (timestamps, analysis count). We do not collect payment card details - those go directly to Stripe.'},
+          {h:'What We Collect', body:'When you use RentalIQ, we collect: your email address (for account creation via Google OAuth), property data you submit for analysis (listing URLs, price, rent, location), your analysis history and results, and basic usage metadata (timestamps, analysis count). We do not collect payment card details - those go directly to Stripe.'},
           {h:'How We Use Your Data', body:'We use your data to: provide the analysis service, save your deal history to your account, send you analysis reports you request, process token purchases via Stripe, and improve our models and service quality using aggregated anonymized data. We never sell your personal data.'},
           {h:'Data Storage', body:'Your account data and deal history are stored in Supabase (a PostgreSQL-based database hosted on AWS). Stripe handles all payment processing and stores payment method data under their own privacy policy. We store the minimum data needed to provide the service.'},
           {h:'Third-Party Services', body:'We use: Google OAuth for sign-in (governed by Google\'s Privacy Policy), Stripe for payments, Supabase for database, Resend for transactional email, Google Gemini API for AI analysis (prompts sent include property data you provide - no personal identifiers). We do not use advertising trackers or analytics beyond basic server logs.'},
           {h:'Your Rights', body:'You can request deletion of your account and all associated data at any time by emailing privacy@rentaliq.app. You can also export your deal history from your dashboard. We will respond to deletion requests within 30 days.'},
           {h:'Cookies', body:'We use a single session cookie to keep you signed in (via NextAuth.js). We do not use advertising cookies, tracking pixels, or cross-site trackers.'},
-          {h:'Security', body:'We use HTTPS everywhere, store passwords as salted hashes (we use magic links and Google OAuth - no passwords are stored), and apply the principle of least privilege to database access. We cannot guarantee perfect security, but we take reasonable measures to protect your data.'},
+          {h:'Security', body:'We use HTTPS everywhere. Sign-in is via Google OAuth — no passwords are stored. We apply the principle of least privilege to database access. We cannot guarantee perfect security, but we take reasonable measures to protect your data.'},
           {h:'Contact', body:'Privacy questions? Email privacy@rentaliq.app. We aim to respond within 5 business days.'},
         ].map((s, i) => (
           <div key={i} style={{marginBottom:32}}>
