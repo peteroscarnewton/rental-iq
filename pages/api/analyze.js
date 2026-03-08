@@ -294,57 +294,71 @@ Return ONLY valid JSON:
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  // -- Token gate (dynamic imports - safe if packages not yet installed) -----
+  // -- Auth + token gate ------------------------------------------------------
+  // Three possible callers:
+  //   A. Authenticated user with tokens  → deduct 1 token, proceed
+  //   B. Authenticated user, no tokens   → 402
+  //   C. Unauthenticated guest           → 1 free use per device fingerprint
+  //                                        tracked in guest_usage table
+  //                                        (same system used for Scout free use)
   let tokensRemaining = null;
+  let guestFp = null; // fingerprint from request body, consumed after analysis
 
   if (process.env.NEXTAUTH_SECRET && process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
     try {
       const { getServerSession } = await import('next-auth/next');
       const session = await getServerSession(req, res, authOptions);
-
-      // Rate limiting — must happen before the auth check so unauthenticated
-      // requests are throttled even before we reject them.
       const isAuthed = !!session?.user?.id;
-      if (!rateLimitWithAuth(req, isAuthed, { anonMax: 3, authedMax: 15, windowMs: 60_000 })) {
+
+      // Rate limiting — higher limit for authed users, tighter for anon
+      if (!rateLimitWithAuth(req, isAuthed, { anonMax: 10, authedMax: 30, windowMs: 60_000 })) {
         return res.status(429).json({ error: 'Too many requests. Please wait a minute and try again.' });
       }
 
-      if (!session?.user?.id) {
-        return res.status(401).json({ error: 'Sign in to run an analysis.', code: 'UNAUTHENTICATED' });
+      if (isAuthed) {
+        // Path A/B — authenticated: deduct token
+        let db;
+        try { db = getSupabaseAdmin(); } catch (e) {
+          console.error('[analyze] getSupabaseAdmin failed:', e.message);
+          return res.status(503).json({ error: 'Service temporarily unavailable. Please try again shortly.' });
+        }
+        const { data: tokenResult, error: tokenError } = await db.rpc('deduct_token', { p_user_id: session.user.id });
+        if (tokenError) { console.error('Token deduct error:', tokenError); return res.status(500).json({ error: 'Token system error. Please try again.' }); }
+        if (tokenResult === false || tokenResult === null) return res.status(402).json({ error: 'No tokens remaining.', code: 'NO_TOKENS', tokens: 0 });
+        tokensRemaining = typeof tokenResult === 'number' ? tokenResult : 0;
+
+      } else {
+        // Path C — unauthenticated guest: check fingerprint-based free use
+        // fp is passed from the client in the request body alongside other fields
+        const fp = req.body?.guestFp;
+        const FP_RE = /^[0-9a-f]{32}$/i;
+        if (!fp || !FP_RE.test(fp)) {
+          // No valid fingerprint → treat as already-used (force sign-in)
+          return res.status(401).json({ error: 'Sign in to run an analysis.', code: 'UNAUTHENTICATED' });
+        }
+
+        let db;
+        try { db = getSupabaseAdmin(); } catch (e) {
+          // Supabase down — fail open for guests so they aren't blocked
+          console.warn('[analyze] Supabase unavailable for guest check, allowing:', e.message);
+          guestFp = null; // skip consume step
+        }
+
+        if (db) {
+          // Check if this fingerprint has already used their free analyze
+          const { data: guest } = await db.from('guest_usage').select('used_analyze').eq('fingerprint', fp).single().catch(() => ({ data: null }));
+          if (guest?.used_analyze) {
+            return res.status(401).json({ error: 'Sign in to run more analyses.', code: 'GUEST_USED' });
+          }
+          guestFp = fp; // mark for consumption after successful analysis
+        }
       }
-
-      // Token deduction — db failure is hard-fail: we must not silently let
-      // users bypass billing when Supabase is temporarily unavailable.
-      let db;
-      try {
-        db = getSupabaseAdmin();
-      } catch (e) {
-        console.error('[analyze] getSupabaseAdmin failed — cannot deduct token:', e.message);
-        return res.status(503).json({ error: 'Service temporarily unavailable. Please try again shortly.' });
-      }
-
-      const { data: tokenResult, error: tokenError } = await db.rpc('deduct_token', {
-        p_user_id: session.user.id,
-      });
-
-      if (tokenError) {
-        console.error('Token deduct error:', tokenError);
-        return res.status(500).json({ error: 'Token system error. Please try again.' });
-      }
-
-      if (tokenResult === false || tokenResult === null) {
-        return res.status(402).json({ error: 'No tokens remaining.', code: 'NO_TOKENS', tokens: 0 });
-      }
-
-      tokensRemaining = typeof tokenResult === 'number' ? tokenResult : 0;
     } catch (authErr) {
       console.error('Auth/token gate error:', authErr.message);
-      // Packages missing or misconfigured — log and hard-fail rather than silently
-      // bypassing auth. This surfaces misconfiguration instead of hiding it.
       return res.status(503).json({ error: 'Authentication service unavailable. Please try again.' });
     }
   }
-  // -------------------------------------------------------------------------
+  // --------------------------------------------------------------------------
 
   const {
     listingUrl, price, rent, beds, baths, sqft, year, city,
@@ -1213,6 +1227,19 @@ export default async function handler(req, res) {
   // Attach market data freshness so UI can show "rates as of X" badge
   if (md?.freshness)   data._marketFreshness = md.freshness;
   if (md?.source)      data._marketSource    = md.source;
+
+  // Consume guest free use AFTER successful analysis — fire and forget
+  if (guestFp) {
+    try {
+      const db = getSupabaseAdmin();
+      const { data: existing } = await db.from('guest_usage').select('id').eq('fingerprint', guestFp).single().catch(() => ({ data: null }));
+      if (existing) {
+        db.from('guest_usage').update({ used_analyze: true, last_seen: new Date().toISOString() }).eq('fingerprint', guestFp).catch(() => {});
+      } else {
+        db.from('guest_usage').insert({ fingerprint: guestFp, used_analyze: true }).catch(() => {});
+      }
+    } catch (_) { /* non-critical */ }
+  }
 
   const responsePayload = tokensRemaining !== null
     ? { ...data, tokensRemaining }

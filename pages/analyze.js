@@ -4,6 +4,7 @@ import { useRouter } from 'next/router';
 import Head from 'next/head';
 import Link from 'next/link';
 import { TOKEN_PACKAGES } from '../lib/tokenPackages';
+import { getDeviceFingerprint } from '../lib/fingerprint';
 
 import { C, MODES, EMPTY_FIELDS, EMPTY_ADV, EMPTY_PROFILE, SAMPLE_DEAL, LOADING_STEPS, LOAN_TYPES } from '../components/analyze/tokens';
 
@@ -407,8 +408,11 @@ export default function Home() {
 
   async function fetchAnalysis(overrides={}) {
     const _headers = {'content-type':'application/json'};
-    // No x-demo header — auth is handled server-side via session only.
+    // For unauthenticated users, send device fingerprint so the server can
+    // track and enforce the 1-free-analyze-per-device limit via guest_usage table.
+    const guestFp = !isAuthed ? getDeviceFingerprint() : undefined;
     const res=await fetch('/api/analyze',{method:'POST',headers:_headers,body:JSON.stringify({
+      guestFp,
       listingUrl:          fields.url    ||undefined,
       price:               overrides.price          ||fields.price,
       rent:                overrides.rent           ||fields.rent||undefined,
@@ -452,11 +456,17 @@ export default function Home() {
     })});
     // Check auth/quota status BEFORE parsing body — a 401 or 402 may have a
     // minimal body that fails JSON.parse, which would leave the spinner running.
-    if (res.status === 401) { setAuthPrompt(true); throw new Error('__silent__'); }
+    if (res.status === 401) {
+      let code = 'UNAUTHENTICATED';
+      try { const b = await res.json(); code = b?.code || code; } catch (_) {}
+      if (code === 'GUEST_USED') { setDemoUsed(true); setAuthPrompt(true); setShowDemoGate(true); }
+      else { setAuthPrompt(true); }
+      throw new Error('__silent__');
+    }
     if (res.status === 402) { setShowTokenModal(true); throw new Error('__silent__'); }
-    if (res.status === 429) throw new Error('AI is rate-limited right now - wait 60 seconds and try again.');
+    if (res.status === 429) throw new Error('Too many requests — wait 60 seconds and try again.');
     if (res.status === 503) throw new Error('Service temporarily unavailable. Please try again shortly.');
-    if (res.status === 504) throw new Error('Analysis timed out - this sometimes happens on complex properties. Try again.');
+    if (res.status === 504) throw new Error('Analysis timed out. Please try again.');
     const data=await res.json();
     if (!res.ok) throw new Error(data?.error||`Unexpected error (${res.status}). Please try again.`);
     if (!data.verdict||data.overallScore===undefined) throw new Error('Incomplete response from AI. Please try again.');
