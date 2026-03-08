@@ -87,6 +87,23 @@ export const authOptions = {
 
   session: { strategy: 'jwt' },
   secret:  process.env.NEXTAUTH_SECRET,
+  // Cookie config: on Vercel preview deployments NEXTAUTH_URL won't match the
+  // deployment URL, which causes the secure/domain cookie to be rejected.
+  // Setting useSecureCookies based on whether we're actually on HTTPS prevents
+  // the cookie from being silently dropped on preview URLs.
+  cookies: {
+    sessionToken: {
+      name: process.env.NODE_ENV === 'production'
+        ? '__Secure-next-auth.session-token'
+        : 'next-auth.session-token',
+      options: {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        secure: process.env.NODE_ENV === 'production',
+      },
+    },
+  },
   pages: {
     signIn:  '/auth',
     signOut: '/auth',

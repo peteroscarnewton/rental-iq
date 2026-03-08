@@ -407,8 +407,7 @@ export default function Home() {
 
   async function fetchAnalysis(overrides={}) {
     const _headers = {'content-type':'application/json'};
-    if (!isAuthed) _headers['x-demo'] = '1';
-    // When overrides are present (re-run AI), use them; otherwise fall back to current form state
+    // No x-demo header — auth is handled server-side via session only.
     const res=await fetch('/api/analyze',{method:'POST',headers:_headers,body:JSON.stringify({
       listingUrl:          fields.url    ||undefined,
       price:               overrides.price          ||fields.price,
@@ -451,11 +450,14 @@ export default function Home() {
                              : undefined,
       listingDescription:  fields.listingDescription?.trim() || undefined,
     })});
-    const data=await res.json();
+    // Check auth/quota status BEFORE parsing body — a 401 or 402 may have a
+    // minimal body that fails JSON.parse, which would leave the spinner running.
     if (res.status === 401) { setAuthPrompt(true); throw new Error('__silent__'); }
     if (res.status === 402) { setShowTokenModal(true); throw new Error('__silent__'); }
     if (res.status === 429) throw new Error('AI is rate-limited right now - wait 60 seconds and try again.');
+    if (res.status === 503) throw new Error('Service temporarily unavailable. Please try again shortly.');
     if (res.status === 504) throw new Error('Analysis timed out - this sometimes happens on complex properties. Try again.');
+    const data=await res.json();
     if (!res.ok) throw new Error(data?.error||`Unexpected error (${res.status}). Please try again.`);
     if (!data.verdict||data.overallScore===undefined) throw new Error('Incomplete response from AI. Please try again.');
     return data;
@@ -591,7 +593,7 @@ export default function Home() {
       _phase6ZipRef.current = null;
     } catch(e) {
       clearTimeout(tid);stopSteps();
-      if (e.message === '__silent__') return;
+      if (e.message === '__silent__') { setStage('input'); return; }
       setErrMsg(e.message||'Something went wrong.');setStage('error');
     }
   },[fields,adv,mode,profile,startSteps,stopSteps]);
@@ -631,7 +633,11 @@ export default function Home() {
         investorGoal:        s.investorGoal,
       });
       stopSteps();setResults(data);setOrigResults(data);setScenario('');setStage('results');setIsEdited(false);
-    } catch(e){stopSteps();setErrMsg(e.message||'Something went wrong.');setStage('error');}
+    } catch(e){
+      stopSteps();
+      if (e.message === '__silent__') { setStage('results'); return; } // stay on results, modal overlay handles it
+      setErrMsg(e.message||'Something went wrong.');setStage('error');
+    }
   }
 
   function handleChatUpdate(updated,label){setOrigResults(p=>p||results);setResults(updated);setScenario(label||'Updated');}
