@@ -69,9 +69,6 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Failed to update deal' });
     }
   }
-      return res.status(500).json({ error: 'Failed to update deal' });
-    }
-  }
 
   try {
     const db = getSupabaseAdmin();
