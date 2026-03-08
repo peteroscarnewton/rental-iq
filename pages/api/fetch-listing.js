@@ -484,7 +484,7 @@ function parseHead(html) {
         if (zdp.taxAnnualAmount && !r.taxAnnual) r.taxAnnual = jld(parseFloat(zdp.taxAnnualAmount));
         if (zdp.monthlyHoaFee != null && !r.hoaMonthly) r.hoaMonthly = jld(parseFloat(zdp.monthlyHoaFee));
         if (zdp.address?.city && zdp.address?.state && !r.city)
-          r.city = jld(\`\${zdp.address.city}, \${zdp.address.state}\`);
+          r.city = jld(`${zdp.address.city}, ${zdp.address.state}`);
       }
       // Redfin: props.pageProps.reduxStore or .serverSideData
       const rfp = nd?.props?.pageProps?.reduxStore?.mediaData
