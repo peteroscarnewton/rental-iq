@@ -25,7 +25,7 @@ export default async function handler(req, res) {
       .from('deals')
       .insert({
         user_id:  session.user.id,
-        address:  analysisData.address  || analysisData.assumedPrice || 'Unknown address',
+        address:  analysisData.address || 'Address not available',
         city:     analysisData.city     || null,
         verdict:  analysisData.verdict  || 'MAYBE',
         score:    parseInt(analysisData.overallScore, 10) || 0,

@@ -1,4 +1,6 @@
 /** @type {import('next').NextConfig} */
+const isDev = process.env.NODE_ENV === 'development';
+
 module.exports = {
   // Security headers on every response
   async headers() {
@@ -14,11 +16,13 @@ module.exports = {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://cdnjs.cloudflare.com",  // cdnjs: jsPDF; unsafe-eval: Next.js dev
+              // unsafe-eval is only needed by Next.js HMR in dev. Never ship it to production.
+              `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''} https://js.stripe.com https://cdnjs.cloudflare.com`,
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "font-src 'self' https://fonts.gstatic.com",
               "img-src 'self' data: https:",
-              "connect-src 'self' https://*.supabase.co https://generativelanguage.googleapis.com https://api.resend.com https://api.stripe.com https://js.stripe.com https://overpass-api.de https://geocoding.geo.census.gov https://api.census.gov https://www2.census.gov https://www.huduser.gov https://www.freddiemac.com https://www.consumerfinance.gov https://api.bls.gov https://fred.stlouisfed.org https://files.zillowstatic.com https://hazards.fema.gov https://data.insideairbnb.com https://evictionlab.org https://www.ncsl.org https://redfin-public-data.s3.us-west-2.amazonaws.com",
+              // nominatim.openstreetmap.org is called by OSM zip-fill in fetch-listing (Layer 3)
+              "connect-src 'self' https://*.supabase.co https://generativelanguage.googleapis.com https://api.resend.com https://api.stripe.com https://js.stripe.com https://overpass-api.de https://nominatim.openstreetmap.org https://geocoding.geo.census.gov https://api.census.gov https://www2.census.gov https://www.huduser.gov https://www.freddiemac.com https://www.consumerfinance.gov https://api.bls.gov https://fred.stlouisfed.org https://files.zillowstatic.com https://hazards.fema.gov https://data.insideairbnb.com https://evictionlab.org https://www.ncsl.org https://redfin-public-data.s3.us-west-2.amazonaws.com",
               "frame-src https://js.stripe.com",
               "frame-ancestors 'none'",
             ].join('; '),

@@ -297,27 +297,32 @@ export default async function handler(req, res) {
   // -- Token gate (dynamic imports - safe if packages not yet installed) -----
   let tokensRemaining = null;
 
-  // Demo mode: x-demo header allows 1 free analysis without auth (rate-limited by IP)
-  const isDemo = req.headers['x-demo'] === '1';
-
-  if (!isDemo && process.env.NEXTAUTH_SECRET && process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  if (process.env.NEXTAUTH_SECRET && process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
     try {
-      const { getServerSession }  = await import('next-auth/next');
+      const { getServerSession } = await import('next-auth/next');
       const session = await getServerSession(req, res, authOptions);
 
-      // Rate limiting
+      // Rate limiting — must happen before the auth check so unauthenticated
+      // requests are throttled even before we reject them.
       const isAuthed = !!session?.user?.id;
-      if (!rateLimitWithAuth(req, isAuthed, { anonMax:3, authedMax:15, windowMs:60_000 })) {
+      if (!rateLimitWithAuth(req, isAuthed, { anonMax: 3, authedMax: 15, windowMs: 60_000 })) {
         return res.status(429).json({ error: 'Too many requests. Please wait a minute and try again.' });
       }
+
       if (!session?.user?.id) {
         return res.status(401).json({ error: 'Sign in to run an analysis.', code: 'UNAUTHENTICATED' });
       }
 
-      let db = null;
-  try { db = getSupabaseAdmin(); } catch (e) {
-    console.warn("[analyze] Supabase unavailable, skipping live enrichment:", e.message);
-  }
+      // Token deduction — db failure is hard-fail: we must not silently let
+      // users bypass billing when Supabase is temporarily unavailable.
+      let db;
+      try {
+        db = getSupabaseAdmin();
+      } catch (e) {
+        console.error('[analyze] getSupabaseAdmin failed — cannot deduct token:', e.message);
+        return res.status(503).json({ error: 'Service temporarily unavailable. Please try again shortly.' });
+      }
+
       const { data: tokenResult, error: tokenError } = await db.rpc('deduct_token', {
         p_user_id: session.user.id,
       });
@@ -334,12 +339,9 @@ export default async function handler(req, res) {
       tokensRemaining = typeof tokenResult === 'number' ? tokenResult : 0;
     } catch (authErr) {
       console.error('Auth/token gate error:', authErr.message);
-      // If packages missing or misconfigured, log and continue - don't block analysis
-    }
-  } else if (isDemo) {
-    // Demo mode - generous rate limit (5/hr per IP) to prevent abuse
-    if (!rateLimitWithAuth(req, false, { anonMax: 5, authedMax: 5, windowMs: 60 * 60_000 })) {
-      return res.status(429).json({ error: 'Demo limit reached. Sign up for unlimited analyses.' });
+      // Packages missing or misconfigured — log and hard-fail rather than silently
+      // bypassing auth. This surfaces misconfiguration instead of hiding it.
+      return res.status(503).json({ error: 'Authentication service unavailable. Please try again.' });
     }
   }
   // -------------------------------------------------------------------------
@@ -654,7 +656,12 @@ export default async function handler(req, res) {
   let marketRentData = null;
   if (!rent) {
     try {
-      const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000';
+      // Resolve the internal base URL correctly across all environments:
+      // - NEXTAUTH_URL: explicitly set in production (canonical domain)
+      // - VERCEL_URL: auto-set by Vercel for all deployments (no https:// prefix)
+      // - localhost fallback: local dev only
+      const vercelUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
+      const baseUrl = process.env.NEXTAUTH_URL || vercelUrl || 'http://localhost:3000';
       const rentRes = await fetch(`${baseUrl}/api/rent-estimate`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-internal': '1' },

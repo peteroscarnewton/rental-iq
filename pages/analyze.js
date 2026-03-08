@@ -185,7 +185,12 @@ export default function Home() {
       const isKnownSite = isZillow || isRedfin || isRealtor;
       if (isKnownSite) {
         const nonListingPatterns = [
-          /zillow\.com\/(homes|search|browse|mortgage|rent|agents|profile|blog)\//i,
+          // Zillow: block bare /homes or /homes/for_sale|for_rent/ (search result roots).
+          // DO NOT block /homes/for_sale/<zpid>_zpid/ or /homes/for_sale/<address>_rb/ —
+          // those are valid listing detail URLs that must reach the API.
+          /zillow\.com\/homes\/?$/i,
+          /zillow\.com\/homes\/(?:for_sale|for_rent)\/?$/i,
+          /zillow\.com\/(search|browse|mortgage|rent\/homes|agents|profile|blog)\//i,
           /zillow\.com\/?$/, /zillow\.com\/\?/,
           /redfin\.com\/(city|zip|school|news|buy-a-home|sell-a-home|agents|mortgage)\/?/i,
           /redfin\.com\/?$/, /redfin\.com\/\?/,
@@ -239,6 +244,22 @@ export default function Home() {
         // Also apply non-numeric passthrough fields
         if (data.listingDescription && !fieldsAtFetchStart.listingDescription?.trim()) {
           setField('listingDescription')(data.listingDescription);
+        }
+        // propertyType: set from API if not already chosen by user
+        // Priority: AI classification → structural signal (homeType/URL) → unitRents array length
+        const currentPropType = (fieldsAtFetchStart.propertyType || 'sfr');
+        const userChosePropType = currentPropType !== 'sfr'; // 'sfr' is the untouched default
+        if (!userChosePropType) {
+          if (data.propertyType) {
+            setField('propertyType')(data.propertyType);
+          } else if (Array.isArray(data.unitRents) && data.unitRents.length >= 2) {
+            // Derive from unit count as last resort
+            const derivedType = data.unitRents.length === 2 ? 'duplex'
+              : data.unitRents.length === 3 ? 'triplex'
+              : data.unitRents.length === 4 ? 'fourplex'
+              : 'sfr';
+            setField('propertyType')(derivedType);
+          }
         }
         if (Array.isArray(data.unitRents) && data.unitRents.length > 0) {
           setField('unitRents')(data.unitRents.map(v => v != null ? String(v) : ''));

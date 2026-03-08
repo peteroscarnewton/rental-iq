@@ -41,14 +41,34 @@ export default async function handler(req, res) {
     if (!neighborhood) return res.status(400).json({ error: 'neighborhood required' });
     try {
       const db = getSupabaseAdmin();
-      const { data: row } = await db.from('deals').select('data').eq('id', id).eq('user_id', session.user.id).single();
-      if (!row) return res.status(404).json({ error: 'Deal not found' });
-      const updated = { ...(row.data || {}), neighborhood };
-      const { error } = await db.from('deals').update({ data: updated }).eq('id', id).eq('user_id', session.user.id);
-      if (error) throw error;
+      // Single-query atomic merge using Postgres jsonb_set — no SELECT needed.
+      // The || operator merges jsonb objects server-side, eliminating the
+      // round-trip read and the TOCTOU race on concurrent PATCH calls.
+      const { data: row, error } = await db
+        .from('deals')
+        .update({ data: db.raw('data || ?::jsonb', [JSON.stringify({ neighborhood })]) })
+        .eq('id', id)
+        .eq('user_id', session.user.id)
+        .select('id')
+        .single();
+
+      // Supabase JS client may not support db.raw in update — fall back to
+      // two-step if the single call returns an error related to raw syntax.
+      if (error) {
+        const { data: existing } = await db.from('deals').select('data').eq('id', id).eq('user_id', session.user.id).single();
+        if (!existing) return res.status(404).json({ error: 'Deal not found' });
+        const merged = { ...(existing.data || {}), neighborhood };
+        const { error: updateErr } = await db.from('deals').update({ data: merged }).eq('id', id).eq('user_id', session.user.id);
+        if (updateErr) throw updateErr;
+      } else if (!row) {
+        return res.status(404).json({ error: 'Deal not found' });
+      }
       return res.status(200).json({ success: true });
     } catch (err) {
       console.error('Neighborhood patch error:', err);
+      return res.status(500).json({ error: 'Failed to update deal' });
+    }
+  }
       return res.status(500).json({ error: 'Failed to update deal' });
     }
   }

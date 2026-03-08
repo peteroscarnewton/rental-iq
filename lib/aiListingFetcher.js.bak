@@ -87,43 +87,26 @@ Extract ALL of the following fields. Return ONLY this JSON object, no other text
 URL: ${url}`;
 }
 
-
-// Second-pass targeted gap-fill — covers taxAnnual, hoaMonthly, year, sqft.
-// County assessor records (always publicly indexed) have year built + sqft + tax.
-// HOA disclosures appear on listing pages indexed within minutes of going live.
-// This fires only when those fields are still null after the first AI + og:meta passes.
+// Second-pass targeted gap-fill: called only when first AI pass left taxAnnual or hoaMonthly null.
+// Uses highly targeted searches rather than a broad listing lookup — much more effective
+// at finding county assessor records and HOA disclosures.
 function buildGapFillPrompt(address, missingFields) {
-  const addrStr  = `${address.street}, ${address.city}, ${address.state}${address.zipcode ? ' ' + address.zipcode : ''}`;
-  const needsTax  = missingFields.includes('taxAnnual');
-  const needsHoa  = missingFields.includes('hoaMonthly');
-  const needsYear = missingFields.includes('year');
-  const needsSqft = missingFields.includes('sqft');
+  const addrStr = `${address.street}, ${address.city}, ${address.state}${address.zipcode ? ' ' + address.zipcode : ''}`;
+  const needsTax = missingFields.includes('taxAnnual');
+  const needsHoa = missingFields.includes('hoaMonthly');
 
-  // County assessor search covers year, sqft, and tax in one query.
   const searches = [];
-  if (needsTax || needsYear || needsSqft) {
-    searches.push(`"${addrStr}" site:assessor OR county records OR property tax — find year built, square footage, annual tax`);
-    searches.push(`"${addrStr}" zillow OR redfin OR realtor.com — year built square feet`);
-  }
-  if (needsHoa) {
-    searches.push(`"${addrStr}" HOA monthly fee homeowners association`);
-  }
+  if (needsTax) searches.push(`"${addrStr} property tax" OR "${addrStr} tax assessment" OR "${address.city} ${address.state} county assessor"`);
+  if (needsHoa) searches.push(`"${addrStr} HOA" OR "${addrStr} homeowners association monthly fee"`);
 
-  const fields = [];
-  if (needsTax)  fields.push(`  "taxAnnual": <integer: annual property tax in dollars from assessor/tax records. null if not found>`);
-  if (needsYear) fields.push(`  "year": <integer: year originally built from assessor records. null if not found>`);
-  if (needsSqft) fields.push(`  "sqft": <integer: interior living area sq ft from assessor/MLS. null if not found>`);
-  if (needsHoa)  fields.push(`  "hoaMonthly": <integer: monthly HOA fee. Use 0 if records confirm NO HOA exists. null only if completely unknown>`);
-  fields.push(`  "confidence": <string: "high" if from official records, "medium" if from listing, "low" if inferred>`);
+  return `Search Google for the following to find missing property data for ${addrStr}:
+${searches.join('\n')}
 
-  return `You are researching public property records for: ${addrStr}
-
-Search Google using these queries:
-${searches.map((s, i) => `${i + 1}. ${s}`).join('\n')}
-
-Return ONLY this JSON object. Use null only if genuinely not findable after searching:
+Return ONLY this JSON object with the fields you find. Use null for anything you cannot confirm:
 {
-${fields.join(',\n')}
+  ${needsTax ? '"taxAnnual": <integer: annual property tax in dollars from tax records or county assessor>,' : ''}
+  ${needsHoa ? '"hoaMonthly": <integer: monthly HOA fee in dollars. Use 0 if search confirms no HOA. null if unclear>' : ''}
+  "confidence": <string: "high" if found directly in records, "medium" if inferred, "low" if estimated>
 }`;
 }
 
@@ -160,28 +143,27 @@ export async function fetchListingViaAI(url, address) {
   return sanitize(parseJSON(text));
 }
 
-// Gap-fill: second focused Gemini call for missing public-record fields.
-// Covers taxAnnual, hoaMonthly, year built, sqft — all in county assessor records.
-// Only fires for listings where first pass left these null. Small fraction of total
-// calls, well within the 1,500 free grounded queries/day.
+// Gap-fill: second focused Gemini call targeting only missing tax/HOA fields.
+// Only fires when the first pass left those fields null AND we have a full address.
+// Stays well within the 1,500 free grounded queries/day — this only runs for
+// listings where the first pass partially failed, which is a small fraction.
 export async function gapFillViaAI(address, missingFields) {
   if (!address?.street || !missingFields?.length) return null;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
 
-  const GAP_FIELDS = ['taxAnnual', 'hoaMonthly', 'year', 'sqft'];
-  const relevantMissing = missingFields.filter(f => GAP_FIELDS.includes(f));
+  const relevantMissing = missingFields.filter(f => ['taxAnnual', 'hoaMonthly'].includes(f));
   if (!relevantMissing.length) return null;
 
   const payload = {
-    system_instruction: { parts: [{ text: 'You are a property records research assistant. Search county assessor and public records. Return only confirmed data as JSON. Never fabricate or estimate — use null if not found.' }] },
+    system_instruction: { parts: [{ text: 'You are a property tax and HOA research assistant. Search for real records and return only confirmed data as JSON. Never estimate or fabricate.' }] },
     contents: [{ role: 'user', parts: [{ text: buildGapFillPrompt(address, relevantMissing) }] }],
     tools: [{ google_search: {} }],
-    generationConfig: { temperature: 0, maxOutputTokens: 512 },
+    generationConfig: { temperature: 0, maxOutputTokens: 256 },
   };
 
   try {
-    const { res } = await callGemini(apiKey, payload, { timeoutMs: 12_000, retries: 1 });
+    const { res } = await callGemini(apiKey, payload, { timeoutMs: 10_000, retries: 1 });
     if (!res.ok) return null;
     const body  = await res.json();
     const parts = body?.candidates?.[0]?.content?.parts ?? [];
@@ -190,18 +172,16 @@ export async function gapFillViaAI(address, missingFields) {
     if (!raw) return null;
 
     const result = {};
-    const BOUNDS = { taxAnnual:[0,500_000], hoaMonthly:[0,10_000], year:[1800,2026], sqft:[100,30_000] };
-    for (const f of relevantMissing) {
-      if (raw[f] == null) continue;
-      const n = parseFloat(String(raw[f]).replace(/[$,]/g, ''));
-      const [lo, hi] = BOUNDS[f];
-      if (isFinite(n) && n >= lo && n <= hi) {
-        result[f] = (f === 'year' || f === 'sqft') ? Math.round(n) : n;
-      }
+    if (relevantMissing.includes('taxAnnual') && raw.taxAnnual != null) {
+      const n = parseFloat(String(raw.taxAnnual).replace(/[$,]/g, ''));
+      if (isFinite(n) && n >= 0 && n <= 500_000) result.taxAnnual = Math.round(n);
+    }
+    if (relevantMissing.includes('hoaMonthly') && raw.hoaMonthly != null) {
+      const n = parseFloat(String(raw.hoaMonthly).replace(/[$,]/g, ''));
+      if (isFinite(n) && n >= 0 && n <= 10_000) result.hoaMonthly = Math.round(n);
     }
     result._gapFillConfidence = raw.confidence || 'medium';
-    // Return only if we found at least one real field (not just confidence)
-    return Object.keys(result).filter(k => k !== '_gapFillConfidence').length > 0 ? result : null;
+    return Object.keys(result).length > 1 ? result : null;
   } catch (_) { return null; }
 }
 const FIELD_BOUNDS = {

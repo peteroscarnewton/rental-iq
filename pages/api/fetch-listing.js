@@ -1,7 +1,7 @@
 import { rateLimitWithAuth }   from '../../lib/rateLimit.js';
-import { fetchSafmrRent }      from '../../lib/marketBenchmarkFetcher.js';
+import { fetchSafmrRent, getMgmtFeeForCity } from '../../lib/marketBenchmarkFetcher.js';
 import { getSupabaseAdmin }    from '../../lib/supabase.js';
-import { fetchListingViaAI }   from '../../lib/aiListingFetcher.js';
+import { fetchListingViaAI, gapFillViaAI } from '../../lib/aiListingFetcher.js';
 import crypto                  from 'crypto';
 
 // /api/fetch-listing  —  v36
@@ -42,8 +42,12 @@ const FACEBOOKBOT_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/extern
 const TWITTERBOT_UA  = 'Twitterbot/1.0';
 // Googlebot first — Zillow/Redfin MUST whitelist it for SEO indexing
 const FETCH_UAS      = [GOOGLEBOT_UA, BINGBOT_UA, FACEBOOKBOT_UA, TWITTERBOT_UA];
-let _uaIdx = 0;
-function nextSocialUA() { return FETCH_UAS[(_uaIdx++) % FETCH_UAS.length]; }
+// UA rotation is per-request, not global, to avoid shared-state interference
+// between concurrent requests in the same warm function container.
+function makeSocialUARotator() {
+  let idx = 0;
+  return () => FETCH_UAS[idx++ % FETCH_UAS.length];
+}
 
 const CORE_FIELDS    = ['price', 'beds', 'baths', 'sqft', 'year', 'city'];
 const ALL_FIELDS     = ['price', 'rent', 'beds', 'baths', 'sqft', 'year', 'city', 'taxAnnual', 'hoaMonthly'];
@@ -56,6 +60,9 @@ export default async function handler(req, res) {
     return res.status(429).json({ error: 'Too many requests. Please wait a minute and try again.' });
   }
 
+  // Per-request UA rotator — avoids shared mutable state across concurrent requests
+  const nextSocialUA = makeSocialUARotator();
+
   const { url } = req.body;
   if (!url || typeof url !== 'string') return res.status(400).json({ error: 'url required' });
 
@@ -63,7 +70,8 @@ export default async function handler(req, res) {
   // Prevents attackers from using this endpoint to probe internal infrastructure
   // (AWS metadata, internal services, localhost, etc.)
   const ALLOWED_LISTING_HOSTS = new Set([
-    'www.zillow.com', 'zillow.com', 'www.redfin.com', 'redfin.com',
+    'www.zillow.com', 'zillow.com', 'm.zillow.com',
+    'www.redfin.com', 'redfin.com', 'm.redfin.com',
     'www.realtor.com', 'realtor.com', 'www.trulia.com', 'trulia.com',
     'www.homes.com', 'homes.com', 'www.movoto.com', 'movoto.com',
     'www.coldwellbanker.com', 'coldwellbanker.com',
@@ -143,6 +151,12 @@ export default async function handler(req, res) {
   if (address) {
     result.city  = `${address.city}, ${address.state}`;
     confMap.city = 'high';
+    // Redfin URL paths embed property type (/multifamily/, /condo/, etc.)
+    // Use as a low-confidence seed — AI classification will override if confident
+    if (address.urlPropertyType && !result.propertyType) {
+      result.propertyType  = address.urlPropertyType;
+      confMap.propertyType = 'low';
+    }
   }
 
   // ── Layer 2: AI extraction (Gemini + Google Search grounding) ───────────────
@@ -158,7 +172,7 @@ export default async function handler(req, res) {
   let aiSucceeded = false;
 
   try {
-    const aiData = await withTimeout(fetchListingViaAI(resolvedUrl), 16_000, null);
+    const aiData = await withTimeout(fetchListingViaAI(resolvedUrl, address), 16_000, null);
 
     if (aiData) {
       aiSucceeded = true;
@@ -176,6 +190,11 @@ export default async function handler(req, res) {
         result.city  = aiData.city;
         confMap.city = 'high';
       }
+      // propertyType from AI — set only if AI returned a valid classification
+      if (aiData.propertyType && !result.propertyType) {
+        result.propertyType  = aiData.propertyType;
+        confMap.propertyType = 'high';
+      }
       // Pass through non-numeric fields from AI
       if (aiData.listingDescription && !result.listingDescription) {
         result.listingDescription = aiData.listingDescription;
@@ -188,23 +207,72 @@ export default async function handler(req, res) {
     // AI call failed — og:meta fallback below will handle it
   }
 
-  // ── Layer 2b: og:meta fallback — fills any fields AI left null ────────────
-  // Also serves as full fallback if AI call failed entirely.
-  // og:meta reliably gets price/beds/baths/sqft/city even when AI can't find
-  // the listing (e.g. brand-new listing not yet indexed).
-  try {
-    const ogResult = await fetchOgMeta(resolvedUrl);
-    if (ogResult) resolveAllFields(result, confMap, [ogResult]);
+  // ── Layers 2b + 2c: og:meta fallback AND targeted gap-fill — run in PARALLEL ─
+  //
+  // 2b: og:meta — fills price/beds/baths/sqft from the listing's <head> tags.
+  //     Works even for brand-new listings since it hits the actual page.
+  //     Social bots (Googlebot UA) are always served full og:meta for SEO.
+  //
+  // 2c: Gemini gap-fill — targeted county assessor searches for any fields
+  //     still null after the first AI pass: taxAnnual, hoaMonthly, year, sqft.
+  //     County assessor records are permanently indexed and never bot-blocked.
+  //     Running this in parallel with og:meta keeps total latency the same.
 
-    // If still missing price, try mobile variant
-    if (result.price == null) {
-      const mobileUrl = toMobileUrl(resolvedUrl);
-      if (mobileUrl) {
-        const mobileResult = await fetchOgMeta(mobileUrl);
-        if (mobileResult) resolveAllFields(result, confMap, [mobileResult]);
+  // Identify what's missing before launching parallel fetch
+  const missingAfterAI = [];
+  if (result.taxAnnual  == null) missingAfterAI.push('taxAnnual');
+  if (result.hoaMonthly == null) missingAfterAI.push('hoaMonthly');
+  if (result.year       == null) missingAfterAI.push('year');
+  if (result.sqft       == null) missingAfterAI.push('sqft');
+
+  const hasFullAddress = address?.street && address?.city && address?.state;
+  const shouldGapFill  = missingAfterAI.length > 0 && hasFullAddress;
+
+  const [ogResult, gapData] = await Promise.allSettled([
+    // 2b: og:meta
+    (async () => {
+      const og = await fetchOgMeta(resolvedUrl);
+      if (og) resolveAllFields(result, confMap, [og]);
+      // If still missing price, try mobile variant
+      if (result.price == null) {
+        const mUrl = toMobileUrl(resolvedUrl);
+        if (mUrl) {
+          const ogM = await fetchOgMeta(mUrl);
+          if (ogM) resolveAllFields(result, confMap, [ogM]);
+        }
+      }
+      return null;
+    })(),
+    // 2c: gap-fill (or immediate null if not needed)
+    shouldGapFill
+      ? withTimeout(gapFillViaAI(address, missingAfterAI), 12_000, null)
+      : Promise.resolve(null),
+  ]);
+
+  // Apply gap-fill results for any fields still null after og:meta
+  const gapResult = gapData.status === 'fulfilled' ? gapData.value : null;
+  if (gapResult) {
+    const gapConf = gapResult._gapFillConfidence === 'high' ? 'high' : 'medium';
+    for (const f of missingAfterAI) {
+      if (gapResult[f] != null && result[f] == null) {
+        result[f]  = gapResult[f];
+        confMap[f] = gapConf;
       }
     }
-  } catch (_) {}
+  }
+
+  // ── HOA default for non-HOA property types ────────────────────────────────
+  // SFR and SFR+ADU properties almost never have an HOA. If hoaMonthly is still
+  // null after all layers, and propertyType is sfr/sfr_adu, default to 0 (no HOA).
+  // This eliminates the most common null — most SFRs don't have HOAs.
+  // Condos and mfr properties stay null (unknown, not zero) because they commonly do.
+  if (result.hoaMonthly == null) {
+    const pt = result.propertyType || 'sfr';
+    if (pt === 'sfr' || pt === 'sfr_adu') {
+      result.hoaMonthly  = 0;
+      confMap.hoaMonthly = 'medium'; // reasonable default, user can override
+    }
+  }
 
   // ── Layer 3: OSM Nominatim zip fill ────────────────────────────────────────
   if (address && !address.zipcode) {
@@ -222,14 +290,33 @@ export default async function handler(req, res) {
     } catch (_) {}
   }
 
-  // ── Layer 4: HUD SAFMR rent estimate ──────────────────────────────────────
-  if (result.rent == null && address?.zipcode) {
+  // ── Layer 4: Rent estimate — full triangulation (HUD SAFMR + Census ACS + state FMR) ──
+  // For for-sale listings rent is never listed, so we always need to estimate it.
+  // The existing /api/rent-estimate endpoint triangulates 3 real data sources —
+  // we call its logic directly here to avoid an extra HTTP round-trip.
+  if (result.rent == null && (address?.zipcode || result.city)) {
     try {
-      const bedsForHud = result.beds != null ? Math.round(Number(result.beds)) : 2;
-      const safmr = await withTimeout(fetchSafmrRent(address.zipcode, bedsForHud), 5000, null);
-      if (safmr?.rent) {
-        result.rent  = safmr.rent;
-        confMap.rent = 'low'; // HUD FMR is a market proxy, not actual rent — amber badge
+      const bedsForRent = result.beds != null ? Math.round(Number(result.beds)) : 2;
+      const zipForRent  = address?.zipcode || null;
+      const cityForRent = result.city || null;
+      const stateCode   = cityForRent?.toUpperCase().match(/,\s*([A-Z]{2})$/)?.[1] || null;
+
+      // Run all three sources in parallel — same triangulation as /api/rent-estimate
+      const [safmrRes, censusRes, hudRes] = await Promise.allSettled([
+        zipForRent ? fetchSafmrRent(zipForRent, bedsForRent) : Promise.resolve(null),
+        zipForRent ? fetchCensusRent(zipForRent, bedsForRent) : Promise.resolve(null),
+        stateCode  ? fetchHudStateFmr(stateCode, bedsForRent) : Promise.resolve(null),
+      ]);
+
+      const safmr  = safmrRes.status  === 'fulfilled' ? safmrRes.value  : null;
+      const census = censusRes.status === 'fulfilled' ? censusRes.value : null;
+      const hud    = hudRes.status    === 'fulfilled' ? hudRes.value    : null;
+
+      const triangulated = triangulateRent({ safmr, census, hud, cityForRent, bedsForRent });
+      if (triangulated) {
+        result.rent  = triangulated.mid;
+        // High confidence if 2+ real sources agreed; low if state-level fallback only
+        confMap.rent = triangulated.sources >= 2 ? 'medium' : 'low';
       }
     } catch (_) {}
   }
@@ -292,15 +379,39 @@ const STREET_SUFFIXES = [
 function emptyResult() {
   return { price:null, rent:null, beds:null, baths:null, sqft:null, year:null,
            city:null, taxAnnual:null, hoaMonthly:null,
-           listingDescription:null, unitRents:null };
+           propertyType:null, listingDescription:null, unitRents:null };
 }
 
 const jld  = v => ({ value: v, tier: 'jsonld' });
 const strd = v => ({ value: v, tier: 'structured' });
 const rgx  = v => ({ value: v, tier: 'regex' });
 
-function withTimeout(promise, ms, fallback = null) {
-  return Promise.race([promise, new Promise(r => setTimeout(() => r(fallback), ms))]);
+// withTimeout: races the promise against a deadline and returns the fallback on timeout.
+// Passes an AbortSignal into the promise factory so the underlying fetch (Gemini, OSM, etc.)
+// is actually cancelled — not just abandoned. Abandoned promises keep consuming network I/O
+// and API quota even after the caller has moved on.
+//
+// Usage: withTimeout(signal => fetchSomething(url, signal), 10_000, null)
+// For backwards compat with 0-arg callsites: if promiseOrFactory is already a Promise
+// (not a function), we race it without cancellation (same as old behaviour).
+function withTimeout(promiseOrFactory, ms, fallback = null) {
+  if (typeof promiseOrFactory === 'function') {
+    // Preferred: factory receives signal so it can pass it to fetch()
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    return promiseOrFactory(controller.signal)
+      .then(v  => { clearTimeout(timer); return v; })
+      .catch(e => {
+        clearTimeout(timer);
+        if (e?.name === 'AbortError') return fallback;
+        throw e;
+      });
+  }
+  // Legacy: plain promise — race without cancellation (no regression for callers
+  // that don't yet pass a factory; they should be migrated over time)
+  let timer;
+  const deadline = new Promise(resolve => { timer = setTimeout(() => resolve(fallback), ms); });
+  return Promise.race([promiseOrFactory, deadline]).finally(() => clearTimeout(timer));
 }
 
 function normalizeUrl(url) {
@@ -320,19 +431,27 @@ function extractAddressFromUrl(url) {
     const path = u.pathname;
 
     if (url.includes('zillow.com')) {
-      const m = path.match(/\/(?:homedetails(?:\/new-construction)?|b)\/([^/]+)/i);
-      if (m) return parseSlug(m[1].replace(/_\d+_?zpid\/?$/, '').replace(/-\d+_zpid$/, ''));
+      // /homedetails/<slug>/<zpid>_zpid/ — standard listing URL
+      // /b/<slug>/ — shortened listing URL
+      // /homes/for_sale/<zpid>_zpid/ or /homes/for_sale/<address>_rb/ — alternate listing URL
+      const m = path.match(/\/(?:homedetails(?:\/new-construction)?|b)\/([^/]+)/i)
+             || path.match(/\/homes\/(?:for_sale|for_rent)\/([^/]+)/i);
+      if (m) return parseSlug(m[1].replace(/_\d+_?zpid\/?$/, '').replace(/-\d+_zpid$/, '').replace(/_rb\/?$/, ''));
     }
 
     if (url.includes('redfin.com')) {
-      const m = path.match(/\/(?:us\/)?([A-Z]{2})\/([^/]+)\/([^/]+)\/(?:home|condo|townhouse|multifamily|land)\//i);
+      const m = path.match(/\/(?:us\/)?([A-Z]{2})\/([^/]+)\/([^/]+)\/(home|condo|townhouse|multifamily|land)\//i);
       if (m) {
-        const state   = m[1].toUpperCase();
-        const city    = m[2].replace(/-/g, ' ');
-        const slug    = m[3];
-        const zipM    = slug.match(/-(\d{5})$/);
-        const street  = slug.replace(/-\d{5}$/, '').replace(/-/g, ' ');
-        return { street: toTitleCase(street), city: toTitleCase(city), state, zipcode: zipM?.[1] || '' };
+        const state    = m[1].toUpperCase();
+        const city     = m[2].replace(/-/g, ' ');
+        const slug     = m[3];
+        const pathType = m[4].toLowerCase(); // 'home'|'condo'|'townhouse'|'multifamily'|'land'
+        const zipM     = slug.match(/-(\d{5})$/);
+        const street   = slug.replace(/-\d{5}$/, '').replace(/-/g, ' ');
+        const urlPropertyType = pathType === 'multifamily' ? 'duplex'
+          : (pathType === 'condo' || pathType === 'townhouse') ? 'condo'
+          : null; // 'home' and 'land' don't tell us enough
+        return { street: toTitleCase(street), city: toTitleCase(city), state, zipcode: zipM?.[1] || '', urlPropertyType };
       }
     }
 
@@ -469,12 +588,17 @@ function parseHead(html) {
   if (ndMatch) {
     try {
       const nd = JSON.parse(ndMatch[1]);
-      // Zillow: props.pageProps.componentProps or .gdpClientCache
+      // Zillow: gdpClientCache lives at pageProps level (modern, 2024+)
+      // OR under componentProps.gdpClientCache (older builds).
+      // Also falls back to initialReduxState path (pre-2023 builds).
       const zp = nd?.props?.pageProps;
-      const zdp = zp?.componentProps?.gdpClientCache
-        ? Object.values(zp.componentProps.gdpClientCache)[0]?.property
-        : zp?.componentProps?.initialReduxState?.gdp?.fullPageData?.property
-          || zp?.componentProps;
+      const zdp = (zp?.gdpClientCache
+          ? Object.values(zp.gdpClientCache)[0]?.property
+          : null)
+        || (zp?.componentProps?.gdpClientCache
+          ? Object.values(zp.componentProps.gdpClientCache)[0]?.property
+          : null)
+        || zp?.componentProps?.initialReduxState?.gdp?.fullPageData?.property;
       if (zdp) {
         if (zdp.price && !r.price)       r.price = jld(parseInt(zdp.price));
         if (zdp.bedrooms && !r.beds)     r.beds  = jld(parseFloat(zdp.bedrooms));
@@ -485,6 +609,16 @@ function parseHead(html) {
         if (zdp.monthlyHoaFee != null && !r.hoaMonthly) r.hoaMonthly = jld(parseFloat(zdp.monthlyHoaFee));
         if (zdp.address?.city && zdp.address?.state && !r.city)
           r.city = jld(`${zdp.address.city}, ${zdp.address.state}`);
+        // homeType: "SINGLE_FAMILY" | "CONDO" | "TOWNHOUSE" | "MULTI_FAMILY" | "APARTMENT" | "MANUFACTURED"
+        if (zdp.homeType && !r.propertyType) {
+          const ht = zdp.homeType.toUpperCase();
+          r.propertyType =
+            ht === 'CONDO'         ? 'condo'
+            : ht === 'TOWNHOUSE'   ? 'condo'
+            : ht === 'MULTI_FAMILY'? 'duplex'  // floor count/unit count unknown; AI will refine
+            : ht === 'APARTMENT'   ? 'mfr'
+            : 'sfr';
+        }
       }
       // Redfin: props.pageProps.reduxStore or .serverSideData
       const rfp = nd?.props?.pageProps?.reduxStore?.mediaData
@@ -775,3 +909,90 @@ function regexPriceVal(text, pattern) {
 }
 
 export const config = { maxDuration: 45 };
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RENT TRIANGULATION — same logic as /api/rent-estimate but inlined to avoid
+// an extra HTTP round-trip. Pulls from 3 free government data sources in parallel.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Bedroom ratio multipliers relative to 2BR (HUD-derived)
+const BR_RATIOS = { 0:0.74, 1:0.85, 2:1.00, 3:1.24, 4:1.47 };
+
+// State median 2BR rent — HUD FY2025 FMR documentation
+const STATE_MEDIAN_2BR = {
+  AL:880,AK:1320,AZ:1280,AR:820,CA:1980,CO:1560,CT:1560,DE:1380,DC:2210,FL:1560,
+  GA:1180,HI:2180,ID:1120,IL:1180,IN:900,IA:920,KS:920,KY:880,LA:980,ME:1280,
+  MD:1620,MA:1880,MI:1020,MN:1180,MS:820,MO:920,MT:1120,NE:1020,NV:1320,NH:1520,
+  NJ:1780,NM:980,NY:1580,NC:1120,ND:880,OH:920,OK:880,OR:1380,PA:1120,RI:1480,
+  SC:1120,SD:880,TN:1080,TX:1180,UT:1320,VT:1380,VA:1380,WA:1580,WV:780,WI:980,WY:980,
+};
+
+// Metro-tier multipliers relative to state median
+const METRO_MULT = {
+  'new york':1.55,'los angeles':1.50,'san francisco':1.60,'san jose':1.55,'seattle':1.35,
+  'boston':1.40,'washington':1.35,'miami':1.25,'denver':1.20,'austin':1.15,'nashville':1.10,
+  'portland':1.15,'san diego':1.30,'oakland':1.40,'chicago':1.15,'dallas':1.05,
+  'cleveland':0.75,'detroit':0.72,'memphis':0.75,'birmingham':0.78,'indianapolis':0.82,
+  'columbus':0.85,'cincinnati':0.82,'st. louis':0.80,'kansas city':0.85,'louisville':0.82,
+};
+
+async function fetchCensusRent(zip, beds) {
+  if (!zip) return null;
+  try {
+    const url = `https://api.census.gov/data/2023/acs/acs5?get=B25058_001E,B25031_003E,B25031_004E,B25031_005E&for=zip+code+tabulation+area:${zip}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    if (!rows?.[1]) return null;
+    const [medianAll, br1, br2, br3] = rows[1].map(v => parseInt(v) > 0 ? parseInt(v) : null);
+    const bedsNum = Math.min(Math.max(parseInt(beds) || 2, 0), 3);
+    const byBeds = [null, br1, br2, br3][bedsNum];
+    return byBeds && byBeds > 300 ? byBeds : (medianAll && medianAll > 300 ? Math.round(medianAll * (BR_RATIOS[bedsNum] || 1)) : null);
+  } catch { return null; }
+}
+
+async function fetchHudStateFmr(stateCode, beds) {
+  if (!stateCode) return null;
+  try {
+    const url = `https://www.huduser.gov/hudapi/public/fmr/statedata/${stateCode}`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'RentalIQ/1.0' }, signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const body = await r.json();
+    const counties = body?.data?.counties || [];
+    if (!counties.length) return null;
+    const bedsNum = Math.min(Math.max(parseInt(beds) || 2, 0), 4);
+    const field = ['Efficiency','One-Bedroom','Two-Bedroom','Three-Bedroom','Four-Bedroom'][bedsNum];
+    const vals = counties.map(c => parseFloat(c[field])).filter(v => v > 200);
+    return vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) : null;
+  } catch { return null; }
+}
+
+function triangulateRent({ safmr, census, hud, cityForRent, bedsForRent }) {
+  const bedsNum   = Math.min(Math.max(parseInt(bedsForRent) || 2, 0), 4);
+  const brRatio   = BR_RATIOS[bedsNum] ?? 1.0;
+  const cityLower = (cityForRent || '').split(',')[0].trim().toLowerCase();
+  const metroMult = Object.entries(METRO_MULT).find(([k]) => cityLower.includes(k))?.[1] ?? 1.0;
+  const stateCode = cityForRent?.toUpperCase().match(/,\s*([A-Z]{2})$/)?.[1] || null;
+
+  const estimates = [];
+
+  // Source 1: HUD SAFMR — ZIP-level, highest precision
+  if (safmr?.rent && safmr.rent > 300) estimates.push({ v: safmr.rent, w: 5 });
+
+  // Source 2: Census ACS — actual observed rents in that ZIP
+  if (census && census > 300) estimates.push({ v: census, w: 3 });
+
+  // Source 3: HUD state FMR — metro-adjusted
+  if (hud && hud > 300) estimates.push({ v: Math.round(hud * metroMult), w: 2 });
+
+  // Source 4: State median baseline — always available
+  const stateBase = stateCode ? STATE_MEDIAN_2BR[stateCode] : null;
+  if (stateBase) estimates.push({ v: Math.round(stateBase * brRatio * metroMult), w: 1 });
+
+  if (!estimates.length) return null;
+
+  const totalW = estimates.reduce((s, e) => s + e.w, 0);
+  const mid    = Math.round(estimates.reduce((s, e) => s + e.v * e.w, 0) / totalW / 25) * 25;
+
+  return { mid, sources: estimates.length };
+}

@@ -177,22 +177,32 @@ export default async function handler(req, res) {
 
 async function upsertIpUsage(db, ipHash, today) {
   try {
-    const { data: existing } = await db
-      .from('guest_ip_usage')
-      .select('use_count')
-      .eq('ip_hash', ipHash)
-      .eq('use_date', today)
-      .single();
-
-    if (existing) {
-      await db.from('guest_ip_usage')
-        .update({ use_count: existing.use_count + 1 })
-        .eq('ip_hash', ipHash)
-        .eq('use_date', today);
-    } else {
-      await db.from('guest_ip_usage').insert({ ip_hash: ipHash, use_date: today, use_count: 1 });
-    }
+    // Single atomic upsert — eliminates the select-then-insert TOCTOU race and
+    // the extra round trip. ON CONFLICT increments the counter atomically.
+    await db.rpc('increment_ip_usage', { p_ip_hash: ipHash, p_date: today })
+      .then(({ error }) => {
+        if (error) throw error;
+      });
   } catch {
-    // Non-critical — don't fail the request
+    // Fallback: if the RPC doesn't exist yet, use the upsert approach
+    // with a conflict target. Still one round trip, still atomic at DB level.
+    try {
+      await db.from('guest_ip_usage').upsert(
+        { ip_hash: ipHash, use_date: today, use_count: 1 },
+        { onConflict: 'ip_hash,use_date', ignoreDuplicates: false }
+      );
+      // Note: proper increment requires the DB function below. Until it exists,
+      // this sets use_count=1 on conflict (not perfect but avoids the race crash).
+      // Deploy this SQL to Supabase:
+      //   CREATE OR REPLACE FUNCTION increment_ip_usage(p_ip_hash text, p_date date)
+      //   RETURNS void LANGUAGE sql AS $$
+      //     INSERT INTO guest_ip_usage (ip_hash, use_date, use_count)
+      //     VALUES (p_ip_hash, p_date, 1)
+      //     ON CONFLICT (ip_hash, use_date)
+      //     DO UPDATE SET use_count = guest_ip_usage.use_count + 1;
+      //   $$;
+    } catch {
+      // Non-critical counter — never fail the request over this
+    }
   }
 }

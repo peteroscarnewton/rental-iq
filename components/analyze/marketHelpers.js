@@ -244,6 +244,11 @@ export function recalcFromEdits(data, edits) {
   const rentMultiplier          = (1 - vacancy / 100) * (1 - mgmtPct / 100);
   const breakEvenRentNeeded     = rentMultiplier > 0 ? fixedCosts / rentMultiplier : fixedCosts;
 
+  // cfAtPrice: binary-search helper — finds what purchase price makes CF = 0 at current rent.
+  // vacMo and mgmtMo are rent-derived (not price-derived), so using the outer values is correct:
+  // vacancy and mgmt costs don't change when you change the purchase price.
+  // Price-sensitive costs (tax, insurance, maintenance, mortgage, PMI) are all recomputed
+  // from p, so the function is mathematically correct as written.
   function cfAtPrice(p) {
     const prin = s.cashPurchase ? 0 : p * (1 - downPct / 100);
     const r = rate / 12 / 100;
@@ -354,11 +359,36 @@ export function recalcFromEdits(data, edits) {
       rentGrowthIRR:                  annReturnWithGrowth !== null ? `${annReturnWithGrowth.toFixed(1)}% IRR` : null,
       rentGrowthTotalCF:              `${rentGrowthTotalCF >= 0 ? '+' : '-'}$${Math.round(Math.abs(rentGrowthTotalCF) / 1000)}k`,
       cashInvested:                   closingAmt > 0 ? `$${Math.round(cashInvested / 1000)}k (incl. closing)` : `$${Math.round(downAmt / 1000)}k`,
-      // Legacy keys — some AI results may still reference these
-      appreciation5yr: `$${Math.round(apprecAmt / 1000)}k`,
-      loanPaydown5yr:  s.cashPurchase ? 'N/A' : `$${Math.round(loanPaydown / 1000)}k`,
-      cashflow5yr:     `${cfHold >= 0 ? '+' : '-'}$${Math.round(Math.abs(cfHold) / 1000)}k`,
-      totalReturn5yr:  `$${Math.round(totalHold / 1000)}k`,
+      // Legacy 5yr keys — computed properly for actual 5-year period regardless of holdYrs.
+      // The WealthProjection card and any AI responses that reference these keys by name
+      // must show the real 5-year figure, not the holdYrs figure re-labeled as "5yr".
+      ...(holdYrs !== 5 ? (() => {
+        const apprecAmt5  = price * (Math.pow(1 + appRate / 100, 5) - 1);
+        const cfHold5     = cf * 60;
+        let loanPaydown5  = 0;
+        if (!s.cashPurchase && mortgage > 0 && loanType !== 'interest_only') {
+          const prin5 = price * (1 - downPct / 100);
+          const r5 = rate / 12 / 100;
+          let bal5 = prin5;
+          for (let i = 0; i < 60; i++) {
+            const int5 = bal5 * r5;
+            bal5 -= Math.max(0, mortgage - int5);
+            loanPaydown5 += Math.max(0, mortgage - int5);
+          }
+        }
+        const totalHold5 = cfHold5 + apprecAmt5 + loanPaydown5;
+        return {
+          appreciation5yr: `$${Math.round(apprecAmt5 / 1000)}k`,
+          loanPaydown5yr:  s.cashPurchase ? 'N/A' : `$${Math.round(loanPaydown5 / 1000)}k`,
+          cashflow5yr:     `${cfHold5 >= 0 ? '+' : '-'}$${Math.round(Math.abs(cfHold5) / 1000)}k`,
+          totalReturn5yr:  `$${Math.round(totalHold5 / 1000)}k`,
+        };
+      })() : {
+        appreciation5yr: `$${Math.round(apprecAmt / 1000)}k`,
+        loanPaydown5yr:  s.cashPurchase ? 'N/A' : `$${Math.round(loanPaydown / 1000)}k`,
+        cashflow5yr:     `${cfHold >= 0 ? '+' : '-'}$${Math.round(Math.abs(cfHold) / 1000)}k`,
+        totalReturn5yr:  `$${Math.round(totalHold / 1000)}k`,
+      }),
     },
     breakEvenIntelligence: {
       currentCF:                    cf,

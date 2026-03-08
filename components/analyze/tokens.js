@@ -76,11 +76,12 @@ export const PROPERTY_TYPES = [
   { key:'triplex',  label:'Triplex',  desc:'3 units'        },
   { key:'fourplex', label:'Fourplex', desc:'4 units'        },
   { key:'condo',    label:'Condo',    desc:'HOA common'     },
+  { key:'mfr',      label:'MFR',      desc:'5+ units'       },
 ];
 
 // How many rentable units each type has (excluding owner unit in house hack)
 export const UNIT_COUNT = {
-  sfr: 1, sfr_adu: 2, duplex: 2, triplex: 3, fourplex: 4, condo: 1,
+  sfr: 1, sfr_adu: 2, duplex: 2, triplex: 3, fourplex: 4, condo: 1, mfr: 5,
 };
 
 // Whether a property type supports house-hacking
