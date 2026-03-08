@@ -108,7 +108,7 @@ export function StressPanel({data}) {
   const baseCFNum = stress.baseCF;
   const scenarios = [
     {label:'Base Case',          value:stress.baseCF,  desc:'Current assumptions', cumulative: null},
-    {label:`+${stress.rateShock}% Rate Shock`,  value:stress.rateCF,  desc:`${(parseFloat(data._settings?.interestRate)||6.99)+stress.rateShock}% interest rate`,
+    {label:`+${stress.rateShock}% Rate Shock`,  value:stress.rateCF,  desc:`${((parseFloat(data._settings?.interestRate)||6.99)+stress.rateShock).toFixed(2)}% interest rate`,
       cumulative: Math.round((stress.rateCF - baseCFNum) * holdMosStress)},
     {label:`-${stress.rentShock}% Rent Drop`,   value:stress.rentCF,  desc:`$${Math.round((parseFloat((data.assumedRent||'').replace(/[^0-9.]/g,''))||0)*(1-stress.rentShock/100))}/mo`,
       cumulative: Math.round((stress.rentCF - baseCFNum) * holdMosStress)},

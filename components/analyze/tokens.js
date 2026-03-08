@@ -39,6 +39,11 @@ export const LOADING_STEPS = [
 export const EMPTY_FIELDS = {
   url:'', price:'', rent:'', beds:'', baths:'', sqft:'', year:'',
   city:'', taxAnnual:'', hoaMonthly:'', propertyType:'sfr',
+  aduRent:'',           // ADU / guest house monthly rent (sfr_adu only)
+  unitCount:'',         // number of units (duplex=2, triplex=3, fourplex=4)
+  houseHack: false,     // owner occupies one unit
+  unitRents: [],        // per-unit rents for mixed multifamily ['1200','950','1400','1100']
+  listingDescription:'',// full listing description (scraped or user-pasted)
 };
 
 export const SAMPLE_DEAL = {
@@ -65,11 +70,21 @@ export const LOAN_TYPES = [
 ];
 
 export const PROPERTY_TYPES = [
-  {key:'sfr',    label:'SFR',    desc:'Single-family'},
-  {key:'duplex', label:'Duplex', desc:'2 units'},
-  {key:'condo',  label:'Condo',  desc:'HOA common'},
-  {key:'mfr',    label:'MFR',    desc:'3-4 units'},
+  { key:'sfr',      label:'SFR',      desc:'Single-family'  },
+  { key:'sfr_adu',  label:'SFR+ADU',  desc:'+ guest house'  },
+  { key:'duplex',   label:'Duplex',   desc:'2 units'        },
+  { key:'triplex',  label:'Triplex',  desc:'3 units'        },
+  { key:'fourplex', label:'Fourplex', desc:'4 units'        },
+  { key:'condo',    label:'Condo',    desc:'HOA common'     },
 ];
+
+// How many rentable units each type has (excluding owner unit in house hack)
+export const UNIT_COUNT = {
+  sfr: 1, sfr_adu: 2, duplex: 2, triplex: 3, fourplex: 4, condo: 1,
+};
+
+// Whether a property type supports house-hacking
+export const SUPPORTS_HOUSEHACK = new Set(['sfr_adu','duplex','triplex','fourplex']);
 
 export const HOLDING_YEARS_OPTIONS = [3, 5, 7, 10, 20];
 

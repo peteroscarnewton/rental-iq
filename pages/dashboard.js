@@ -339,16 +339,16 @@ export default function Dashboard() {
         <nav style={{position:'sticky',top:0,zIndex:100,background:'rgba(245,245,248,0.88)',backdropFilter:'blur(12px)',borderBottom:`1px solid ${C.border}`,padding:'0 32px'}}>
           <div style={{maxWidth:1080,margin:'0 auto',display:'flex',alignItems:'center',justifyContent:'space-between',height:52}}>
             <div style={{display:'flex',alignItems:'center',gap:16}}>
-              <Link href="/" style={{display:'flex',alignItems:'center',gap:8,textDecoration:'none'}}>
-                <div style={{width:8,height:8,background:C.green,borderRadius:'50%'}}/>
-                <span style={{fontSize:13,fontWeight:700,letterSpacing:'-0.01em',color:C.text}}>RentalIQ</span>
+              <Link href="/" style={{display:'flex',alignItems:'center',textDecoration:'none'}}>
+                
+                <span style={{fontSize:16,fontWeight:700,letterSpacing:'-0.01em',color:C.text}}>RentalIQ</span>
               </Link>
               <div style={{display:'inline-flex',background:C.soft,borderRadius:10,padding:3,gap:3}}>
                 <Link href="/analyze" style={{display:'block',padding:'5px 14px',borderRadius:8,fontSize:12.5,fontWeight:600,color:C.muted,textDecoration:'none',transition:'color 0.15s'}}>
-                  Analyze a Listing
+                  Analyze
                 </Link>
                 <Link href="/scout" style={{display:'block',padding:'5px 14px',borderRadius:8,fontSize:12.5,fontWeight:600,color:C.muted,textDecoration:'none',transition:'color 0.15s'}}>
-                  Find My Market
+                  Scout
                 </Link>
                 <span style={{display:'block',padding:'5px 14px',borderRadius:8,background:C.white,fontSize:12.5,fontWeight:700,color:C.text,boxShadow:C.shadowSm}}>
                   My Deals

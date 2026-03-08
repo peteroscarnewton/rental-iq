@@ -17,23 +17,26 @@ export function BreakEvenIntelligence({data}) {
 
   const isYes = verdict === 'YES';
 
+  // Strip any math explanation bleed from AI responses
+  const cleanVal = v => (v || '').split(/[\s(]/)[0].trim() || v;
+
   const items = [];
   if (bi.rentGapToPositive) items.push({
-    label: 'Rent needed for positive cash flow',
+    label: 'Rent for positive cash flow',
     sub: bi.rentGapToPositive,
-    value: bi.breakEvenRentForPositiveCF,
+    value: cleanVal(bi.breakEvenRentForPositiveCF),
     accent: C.amber, accentBg: C.amberBg, accentBorder: C.amberBorder,
   });
   if (bi.rentGapTo10CoC) items.push({
-    label: 'Rent for 10% CoC (Kiyosaki target)',
+    label: 'Rent for 10% CoC',
     sub: bi.rentGapTo10CoC,
-    value: bi.breakEvenRentFor10CoC,
+    value: cleanVal(bi.breakEvenRentFor10CoC),
     accent: C.green, accentBg: C.greenBg, accentBorder: C.greenBorder,
   });
   if (bi.priceGapToPositive) items.push({
-    label: 'Negotiate price to break even',
+    label: 'Price to break even',
     sub: bi.priceGapToPositive,
-    value: bi.breakEvenPrice,
+    value: cleanVal(bi.breakEvenPrice),
     accent: C.blue, accentBg: C.blueBg, accentBorder: C.blueBorder,
   });
 
@@ -41,22 +44,13 @@ export function BreakEvenIntelligence({data}) {
 
   return (
     <Card style={{marginBottom:14}}>
-      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
-        <div style={{width:32,height:32,borderRadius:10,background:isYes?C.amberBg:C.redBg,
-          border:`1px solid ${isYes?C.amberBorder:C.redBorder}`,
-          display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:16}}>
-          isYes ? '!' : '→'
-        </div>
-        <div>
-          <Label style={{marginBottom:0}}>
-            {isYes ? 'Know Your Downside' : 'What Would Make This a YES?'}
-          </Label>
-          <div style={{fontSize:11,color:C.muted,marginTop:2}}>
-            {isYes
-              ? 'This deal works — know the thresholds that would flip it.'
-              : 'This deal needs one of these changes to hit your targets:'}
-          </div>
-        </div>
+      <Label style={{marginBottom:4}}>
+        {isYes ? 'Know Your Downside' : 'What Would Make This a YES?'}
+      </Label>
+      <div style={{fontSize:11,color:C.muted,marginBottom:16}}>
+        {isYes
+          ? 'This deal works — know the thresholds that would flip it.'
+          : 'This deal needs one of these changes to hit your targets:'}
       </div>
 
       <div style={{display:'flex',flexDirection:'column',gap:10}}>
@@ -64,28 +58,17 @@ export function BreakEvenIntelligence({data}) {
           <div key={i} style={{
             background:item.accentBg,
             border:`1px solid ${item.accentBorder}`,
-            borderRadius:12,padding:'14px 16px',
-            display:'flex',alignItems:'center',
-            justifyContent:'space-between',gap:16,flexWrap:'wrap',
+            borderRadius:12,
+            padding:'14px 16px',
           }}>
-            <div style={{display:'flex',alignItems:'center',gap:0,flex:1,minWidth:0}}>
-              <div style={{minWidth:0}}>
-                <div style={{fontSize:12.5,fontWeight:600,color:C.text,marginBottom:2}}>{item.label}</div>
-                <div style={{fontSize:11.5,color:C.muted,lineHeight:1.4}}>{item.sub}</div>
-              </div>
-            </div>
-            <div style={{
-              fontFamily:"'Instrument Serif',Georgia,serif",
-              fontSize:22,fontWeight:700,color:item.accent,
-              flexShrink:0,textAlign:'right',whiteSpace:'nowrap',
-            }}>
-              {item.value}
-            </div>
+            <div style={{fontSize:9.5,fontWeight:600,letterSpacing:'0.08em',textTransform:'uppercase',color:item.accent,marginBottom:4}}>{item.label}</div>
+            <div style={{fontFamily:"'Instrument Serif',Georgia,serif",fontSize:24,lineHeight:1,color:item.accent,marginBottom:4}}>{item.value}</div>
+            <div style={{fontSize:11.5,color:C.muted}}>{item.sub}</div>
           </div>
         ))}
       </div>
 
-      <div style={{marginTop:14,fontSize:12,color:C.muted,lineHeight:1.6,borderTop:`1px solid ${C.border}`,paddingTop:12}}>
+      <div style={{marginTop:14,fontSize:11.5,color:C.muted,lineHeight:1.6,borderTop:`1px solid ${C.border}`,paddingTop:12}}>
         Use the price and rent editors above to model any of these scenarios instantly — numbers update live.
       </div>
     </Card>

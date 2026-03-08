@@ -171,13 +171,13 @@ export default function ComparePage() {
       <nav style={{background:'rgba(245,245,248,0.88)',backdropFilter:'blur(12px)',WebkitBackdropFilter:'blur(12px)',borderBottom:`1px solid ${C.border}`,padding:'0 32px',position:'sticky',top:0,zIndex:100}}>
         <div style={{maxWidth:1200,margin:'0 auto',height:52,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
-            <Link href="/" style={{display:'flex',alignItems:'center',gap:8,textDecoration:'none'}}>
-              <div style={{width:8,height:8,background:C.green,borderRadius:'50%'}}/>
-              <span style={{fontSize:13,fontWeight:700,color:C.text,letterSpacing:'-0.01em'}}>RentalIQ</span>
+            <Link href="/" style={{display:'flex',alignItems:'center',textDecoration:'none'}}>
+              
+              <span style={{fontSize:16,fontWeight:700,color:C.text,letterSpacing:'-0.01em'}}>RentalIQ</span>
             </Link>
             <div style={{display:'inline-flex',background:C.soft,borderRadius:10,padding:3,gap:3,marginLeft:8}}>
-              <Link href="/analyze" style={{display:'block',padding:'5px 14px',borderRadius:8,fontSize:12.5,fontWeight:600,color:C.muted,textDecoration:'none'}}>Analyze a Listing</Link>
-              <Link href="/scout" style={{display:'block',padding:'5px 14px',borderRadius:8,fontSize:12.5,fontWeight:600,color:C.muted,textDecoration:'none'}}>Find My Market</Link>
+              <Link href="/analyze" style={{display:'block',padding:'5px 14px',borderRadius:8,fontSize:12.5,fontWeight:600,color:C.muted,textDecoration:'none'}}>Analyze</Link>
+              <Link href="/scout" style={{display:'block',padding:'5px 14px',borderRadius:8,fontSize:12.5,fontWeight:600,color:C.muted,textDecoration:'none'}}>Scout</Link>
               <Link href="/dashboard" style={{display:'block',padding:'5px 14px',borderRadius:8,background:C.white,fontSize:12.5,fontWeight:700,color:C.text,textDecoration:'none',boxShadow:C.shadowSm}}>My Deals</Link>
             </div>
           </div>

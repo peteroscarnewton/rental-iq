@@ -236,6 +236,13 @@ export default function Home() {
         // Apply whatever fields we got (works for both full and blocked/partial)
         // Only overwrite fields that were EMPTY when the fetch started - never clobber manual entries
         const FIELD_MAP = {price:'price',rent:'rent',beds:'beds',baths:'baths',sqft:'sqft',year:'year',city:'city',taxAnnual:'taxAnnual',hoaMonthly:'hoaMonthly'};
+        // Also apply non-numeric passthrough fields
+        if (data.listingDescription && !fieldsAtFetchStart.listingDescription?.trim()) {
+          setField('listingDescription')(data.listingDescription);
+        }
+        if (Array.isArray(data.unitRents) && data.unitRents.length > 0) {
+          setField('unitRents')(data.unitRents.map(v => v != null ? String(v) : ''));
+        }
         const confMap   = data.confidence || {};  // { field: 'high' | 'medium' | 'low' }
         const newStatus = {};
         for (const [key, fieldKey] of Object.entries(FIELD_MAP)) {
@@ -385,6 +392,7 @@ export default function Home() {
       listingUrl:          fields.url    ||undefined,
       price:               overrides.price          ||fields.price,
       rent:                overrides.rent           ||fields.rent||undefined,
+      // perUnitRent removed — API derives from unitRents array presence (no race condition)
       beds:                fields.beds    ||undefined,
       baths:               fields.baths   ||undefined,
       sqft:                fields.sqft    ||undefined,
@@ -414,6 +422,13 @@ export default function Home() {
       hoaMonthly:          overrides.hoaMonthly     != null ? overrides.hoaMonthly     : (fields.hoaMonthly ? parseFloat(fields.hoaMonthly) : undefined),
       closingCostPct:      overrides.closingCostPct != null ? overrides.closingCostPct : (adv.closingCostPct ? parseFloat(adv.closingCostPct) : undefined),
       propertyType:        overrides.propertyType    || fields.propertyType || 'sfr',
+      // Multi-unit fields
+      aduRent:             fields.aduRent ? parseFloat(String(fields.aduRent).replace(/[^0-9.]/g,'')) : undefined,
+      houseHack:           Boolean(fields.houseHack),
+      unitRents:           (fields.unitRents && fields.unitRents.some(v => v && String(v).trim()))
+                             ? fields.unitRents.map(v => v ? parseFloat(String(v).replace(/[^0-9.]/g,''))||0 : 0)
+                             : undefined,
+      listingDescription:  fields.listingDescription?.trim() || undefined,
     })});
     const data=await res.json();
     if (res.status === 401) { setAuthPrompt(true); throw new Error('__silent__'); }
@@ -489,7 +504,7 @@ export default function Home() {
             // Only for SFR/condo where school quality meaningfully impacts the deal
             // Use data._settings (fresh analysis object in scope), not results state (stale closure)
             const propType = data._settings?.propertyType || 'sfr';
-            if (nb?.zip && (propType === 'sfr' || propType === 'condo')) {
+            if (nb?.zip && (propType === 'sfr' || propType === 'sfr_adu' || propType === 'condo')) {
               fetch(`/api/school-rating?zip=${nb.zip}`)
                 .then(r => r.ok ? r.json() : null)
                 .then(sd => { if (sd && sd.count > 0) setSchoolData(sd); })
@@ -537,7 +552,7 @@ export default function Home() {
 
       // Phase 8B: STR data — only for SFR/condo, fetch market data for city + beds
       const propTypeForStr = data._settings?.propertyType || 'sfr';
-      if (isAuthed && (propTypeForStr === 'sfr' || propTypeForStr === 'condo') && fields.city) {
+      if (isAuthed && (propTypeForStr === 'sfr' || propTypeForStr === 'sfr_adu' || propTypeForStr === 'condo') && fields.city) {
         setStrLoading(true);
         setStrData(null);
         const strParams = new URLSearchParams({
@@ -827,17 +842,17 @@ export default function Home() {
           borderBottom:`1px solid ${C.border}`,
           padding:'0 32px'}}>
           <div style={{maxWidth:1080,margin:'0 auto',display:'flex',alignItems:'center',justifyContent:'space-between',height:52}}>
-            <Link href="/" style={{display:'flex',alignItems:'center',gap:8,textDecoration:'none'}}>
-              <div style={{width:8,height:8,background:C.green,borderRadius:'50%'}}/>
-              <span style={{fontSize:13,fontWeight:700,letterSpacing:'-0.01em',color:C.text}}>RentalIQ</span>
+            <Link href="/" style={{display:'flex',alignItems:'center',textDecoration:'none'}}>
+              
+              <span style={{fontSize:16,fontWeight:700,letterSpacing:'-0.01em',color:C.text}}>RentalIQ</span>
             </Link>
             <div className="riq-nav-links" style={{display:'flex',alignItems:'center',gap:16}}>
               <div style={{display:'inline-flex',background:C.soft,borderRadius:10,padding:3,gap:3}}>
                 <Link href="/analyze" style={{display:'block',padding:'5px 14px',borderRadius:8,background:C.white,fontSize:12.5,fontWeight:700,color:C.text,boxShadow:C.shadowSm,textDecoration:'none',whiteSpace:'nowrap'}}>
-                  Analyze a Listing
+                  Analyze
                 </Link>
                 <Link href="/scout" style={{display:'block',padding:'5px 14px',borderRadius:8,fontSize:12.5,fontWeight:700,color:C.muted,textDecoration:'none',whiteSpace:'nowrap'}}>
-                  Market Search
+                  Scout
                 </Link>
               </div>
               {isAuthed ? (
@@ -890,11 +905,11 @@ export default function Home() {
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
                 <Link href="/analyze" onClick={()=>{setShowMobileNav(false);window.scrollTo({top:0,behavior:'smooth'});}}
                   style={{padding:'12px 16px',borderRadius:10,fontSize:14,fontWeight:600,color:C.text,background:C.soft,textDecoration:'none',display:'block'}}>
-                  Analyze a Listing
+                  Analyze
                 </Link>
                 <Link href="/scout" onClick={()=>setShowMobileNav(false)}
                   style={{padding:'12px 16px',borderRadius:10,fontSize:14,fontWeight:500,color:C.text,textDecoration:'none',border:`1px solid ${C.border}`,display:'block'}}>
-                  Market Search
+                  Scout
                 </Link>
                 {isAuthed && <>
                   <Link href="/dashboard" onClick={()=>setShowMobileNav(false)}

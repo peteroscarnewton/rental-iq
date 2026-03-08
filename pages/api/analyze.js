@@ -41,6 +41,85 @@ const GOAL_WEIGHTS = {
   tax:          { cashflow: 0.20, location: 0.25, onePercent: 0.10, market: 0.30, landlord: 0.15 },
 };
 
+// ─── Deterministic sub-score computation ────────────────────────────────────
+// These are computed server-side from exact numeric inputs so the same inputs
+// always produce the same sub-scores — eliminating LLM sampling variance.
+//
+// cashflowScore and onePercentScore are pure math.
+// landlordScore comes from our LANDLORD_LAWS database (already fetched).
+// locationScore and marketScore are left to the LLM (genuinely judgment-based)
+// but the final overallScore is RECOMPUTED server-side using those two LLM values
+// plus our three deterministic values, so LLM variance only affects 2 of 5 inputs.
+
+function computeCashflowScore(coc) {
+  // CoC → 0-100 score. Calibrated to SCORE_CALIBRATION in prompt.
+  // ≥12% CoC → 100, 10% → 85, 8% → 72, 6% → 58, 3% → 40, 0% → 28, -5% → 12, ≤-12% → 0
+  if (coc >= 12)  return 100;
+  if (coc >= 10)  return Math.round(85 + (coc - 10) / 2 * 15);
+  if (coc >=  8)  return Math.round(72 + (coc -  8) / 2 * 13);
+  if (coc >=  6)  return Math.round(58 + (coc -  6) / 2 * 14);
+  if (coc >=  3)  return Math.round(40 + (coc -  3) / 3 * 18);
+  if (coc >=  0)  return Math.round(28 + (coc /  3) * 12);
+  if (coc >= -5)  return Math.round(12 + ((coc + 5) / 5) * 16);
+  if (coc >= -12) return Math.round(0  + ((coc + 12) / 7) * 12);
+  return 0;
+}
+
+function computeOnePercentScore(rentPct) {
+  // rent/price*100 → 0-100 score
+  if (rentPct >= 1.5) return 100;
+  if (rentPct >= 1.0) return Math.round(70 + (rentPct - 1.0) / 0.5 * 30);
+  if (rentPct >= 0.7) return Math.round(40 + (rentPct - 0.7) / 0.3 * 30);
+  if (rentPct >= 0.5) return Math.round(15 + (rentPct - 0.5) / 0.2 * 25);
+  return Math.round(Math.max(0, rentPct / 0.5 * 15));
+}
+
+function computeServerSideMetrics(p, r, s) {
+  // p = numeric price, r = numeric rent (may be null), s = settings object
+  // Returns { coc, rentPct, cashflowScore, onePercentScore, landlordScore } or partial if rent unknown
+  if (!p || p <= 0) return null;
+
+  const result = { hasRent: r != null && r > 0 };
+
+  if (result.hasRent) {
+    const principal  = p * (1 - s.downPaymentPct / 100);
+    const r_rate     = s.cashPurchase ? 0 : s.interestRate / 1200;
+    const n          = s.cashPurchase ? 0 : s.loanTermYears * 12;
+    const mortgage   = s.cashPurchase ? 0
+      : s.loanType === 'interest_only' ? principal * r_rate
+      : n > 0 && r_rate > 0 ? principal * (r_rate * Math.pow(1 + r_rate, n)) / (Math.pow(1 + r_rate, n) - 1)
+      : 0;
+
+    const taxMo      = p * (s.taxRate / 100) / 12;
+    const insMo      = p * (s.insRate / 100) / 12;
+    const vacMo      = r * (s.vacancy / 100);
+    const mgmtMo     = s.selfManage ? 0 : (r - vacMo) * (s.mgmtRate / 100);
+    const maintMo    = p * (s.maintenance / 100) / 12;
+    const capexMo    = s.capex;
+    const hoaMo      = s.hoaMonthly || 0;
+    const pmiMo      = s.pmiMonthly || 0;
+    const totalExp   = mortgage + taxMo + insMo + vacMo + mgmtMo + maintMo + capexMo + hoaMo + pmiMo;
+    const cashflow   = r - totalExp;
+
+    const closingPct    = s.closingCostPct || 0;
+    const cashInvested  = s.cashPurchase
+      ? p
+      : p * (s.downPaymentPct / 100) * (1 + closingPct / 100);
+    const coc        = cashInvested > 0 ? (cashflow * 12 / cashInvested) * 100 : 0;
+    const rentPct    = (r / p) * 100;
+
+    result.cashflow        = Math.round(cashflow);
+    result.coc             = Math.round(coc * 10) / 10;
+    result.rentPct         = Math.round(rentPct * 100) / 100;
+    result.cashflowScore   = computeCashflowScore(coc);
+    result.onePercentScore = computeOnePercentScore(rentPct);
+  }
+
+  return result;
+}
+
+
+
 const SYSTEM_PROMPT_TEMPLATE = (s) => {
   const holdYrs = s.holdingYears || 5;
   const pmiMo = (!s.cashPurchase && s.downPaymentPct < 20)
@@ -52,10 +131,13 @@ const SYSTEM_PROMPT_TEMPLATE = (s) => {
     '5_1_arm':'5/1 ARM (fixed 5yr, then adjusts)','interest_only':'Interest-only (no principal paydown)',
   }[s.loanType] || '30-year fixed';
   const propTypeNote = {
-    sfr:'Single-family home - standard vacancy/mgmt assumptions',
-    duplex:'Duplex - 2 units. Apply vacancy independently per unit. Combined rent provided.',
-    condo:'Condo - HOA common. Factor HOA into expense breakdown.',
-    mfr:'Multi-family (3-4 units) - adjust vacancy to be slightly lower (tenant diversification)',
+    sfr:      'Single-family home — single rentable unit, standard assumptions',
+    sfr_adu:  `SFR with ADU/guest house — TWO separate structures. Primary unit rent: $${s.perUnitRent||'(estimated)'}/mo. ADU rent: $${s.aduRentNum||'(estimated)'}/mo. ADU has higher vacancy (typically 10-15%) than the main house (5-8%) because ADUs turn over more frequently. Apply vacancy to each structure independently. Combined effective income: $${s.effectiveRent||'(estimated)'}/mo.${s.houseHack ? ' HOUSE HACK: Owner occupies the MAIN HOUSE — only ADU rent counts as income.' : ''}`,
+    duplex:   `Duplex — 2 investment units. ${s.unitRentsList ? `Unit rents: ${s.unitRentsList.map((r,i)=>'Unit '+(i+1)+': $'+Math.round(r)+'/mo').join(', ')}. Total: $${Math.round(s.grossRent||0)}/mo gross.` : `Per-unit rent: $${s.perUnitRent||'(estimated)'}/mo × 2 = $${s.grossRent||'(estimated)'}/mo gross.`} Apply vacancy independently per unit (losing one tenant = losing 50% income). Mention this binary vacancy risk.${s.houseHack ? ' HOUSE HACK: Owner occupies one unit — income is only 1 unit's rent.' : ''}`,
+    triplex:  `Triplex — 3 units. ${s.unitRentsList ? `Unit rents: ${s.unitRentsList.map((r,i)=>'Unit '+(i+1)+': $'+Math.round(r)+'/mo').join(', ')}. Total: $${Math.round(s.grossRent||0)}/mo gross.` : `Per-unit rent: $${s.perUnitRent||'(estimated)'}/mo × 3 = $${s.grossRent||'(estimated)'}/mo gross.`} Per-unit vacancy is independent but diversified risk (losing one tenant = losing 33% income). Slightly lower effective vacancy than duplex due to tenant diversification.${s.houseHack ? ' HOUSE HACK: Owner occupies one unit — income is only 2 units' rent.' : ''}`,
+    fourplex: `Fourplex — 4 units. ${s.unitRentsList ? `Unit rents: ${s.unitRentsList.map((r,i)=>'Unit '+(i+1)+': $'+Math.round(r)+'/mo').join(', ')}. Total: $${Math.round(s.grossRent||0)}/mo gross.` : `Per-unit rent: $${s.perUnitRent||'(estimated)'}/mo × 4 = $${s.grossRent||'(estimated)'}/mo gross.`} Best tenant diversification in this class (losing one tenant = losing 25% income). Apply lower effective vacancy rate (~6-7%) versus SFR.${s.houseHack ? ' HOUSE HACK: Owner occupies one unit — income is only 3 units' rent.' : ''}`,
+    condo:    'Condo — single unit, HOA required. Factor HOA into expense breakdown.',
+    mfr:      'Multi-family (3-4 units) — lower effective vacancy due to tenant diversification',
   }[s.propertyType] || 'Single-family home';
   return `You are a blunt, experienced real estate investment analyst with a Rich Dad mindset. You think about TOTAL return - cash flow, appreciation, equity, and leverage - not just monthly income. Use ONLY the exact numbers provided.
 
@@ -73,7 +155,14 @@ INVESTOR PROFILE:
 - Score weights reflect this goal: ${JSON.stringify(GOAL_WEIGHTS[s.investorGoal] || GOAL_WEIGHTS.balanced)}
 
 PROPERTY TYPE: ${propTypeNote}
-
+${s.houseHack ? `
+HOUSE HACK FRAMING — apply to ALL calculations and narrative:
+- Owner occupies one unit. Income = ${s.unitCount - 1} of ${s.unitCount} units' rent only.
+- Monthly housing cost offset = (rented units' rent − mortgage − all expenses). If positive, owner lives "for free" + earns cashflow. If negative, owner pays the difference to live there.
+- CoC return: cash_invested = down payment; income = rented units only. Frame CoC as "investor return on capital deployed."
+- Note in verdict: owner-occupied financing (FHA 3.5% down, conventional 5% down) may be available, reducing cash required vs pure investment financing.
+- Do NOT count the owner's unit as vacancy or as income.
+` : ''}
 EXPENSES (use exactly):
 - Property taxes: ${s.taxRate.toFixed(2)}%/yr${s.taxUserProvided ? ' ✓ from listing' : ` (${s.stateCode||'state'} estimate)`}
 - Insurance: ${s.insRate.toFixed(2)}%/yr (${s.stateCode||'state'}-specific rate - post-2023)
@@ -94,7 +183,9 @@ MATH - follow exactly:
    where: mgmt_mo = (rent − vacancy_mo) × ${s.selfManage ? '0' : s.mgmtRate/100} (management on effective/collected rent only)
 3. Monthly cashflow = rent − total expenses
 4. CoC = (cashflow*12 / cash_invested) * 100. cash_invested = ${s.cashPurchase ? 'price' : `price * ${s.downPaymentPct/100}${s.closingCostPct>0?` + price * ${s.closingCostPct/100} (closing costs)`:''}`}
-5. 1% Rule = (rent/price)*100
+5. 1% Rule = (effectiveRent/price)*100 where effectiveRent = income-generating rent only.
+   For SFR+ADU: (primaryRent + aduRent)/price*100. For duplex/triplex/fourplex: use gross rent (all units).
+   For house hack: use incomeRent (rented units only) — owner's unit is not investable income.
 6. Cap Rate (correct formula - includes management as expense): NOI = rent*12 − (taxes_annual + insurance_annual + vacancy_annual + mgmt_annual + maint_annual + capex*12${s.hoaMonthly>0?` + hoa*12`:''}). Cap Rate = NOI/price*100. This reflects true asset value.
 7. GRM = price/(rent*12)
 8. ${s.cashPurchase ? 'DSCR = "N/A"' : 'DSCR = NOI_annual / (mortgage*12). This is the CORRECT lender formula. NOI_annual = (rent - vacancy_mo - taxes_mo - insurance_mo - mgmt_mo - maint_mo - capex'+(s.hoaMonthly>0?' - hoa_mo':'')+`)*12. Do NOT use rent/mortgage - that overstates coverage. Green ≥1.25, yellow 1.00-1.24, red <1.00`}
@@ -190,8 +281,8 @@ Return ONLY valid JSON:
   "pros": ["4 items with specific numbers"],
   "cons": ["3 items with specific numbers - if HOA or PMI materially affects cash flow, mention it"],
   "breakEvenIntelligence": {
-    "breakEvenRentForPositiveCF": "$X/mo (minimum rent for $0 cashflow). Math: fixedCosts = mortgage+taxes_mo+insurance_mo+maintenance_mo+capex+hoa+pmi. rentMultiplier = (1-vacancy%)*(1-mgmt%). breakEvenRentForPositiveCF = fixedCosts/rentMultiplier",
-    "breakEvenRentFor10CoC": "$X/mo (rent needed for 10% CoC). Math: targetCF = cashInvested*0.10/12. breakEvenRentFor10CoC = (fixedCosts+targetCF)/rentMultiplier",
+    "breakEvenRentForPositiveCF": "$X,XXX/mo",
+    "breakEvenRentFor10CoC": "$X,XXX/mo",
     "breakEvenPrice": "$Xk or null (max price for positive cashflow at current rent)",
     "rentGapToPositive": "+$X/mo needed or null if already positive",
     "rentGapTo10CoC": "+$X/mo needed or null if already at 10%+",
@@ -277,6 +368,12 @@ export default async function handler(req, res) {
     experience = '',
     appreciationOverride = null,
     rentGrowthOverride = null,
+    // Multi-unit fields
+    aduRent = null,          // ADU / guest house monthly rent (sfr_adu only)
+    houseHack = false,       // owner occupies one unit
+    perUnitRent = false,     // rent field is per-unit (duplex/triplex/fourplex)
+    unitRents = null,        // array of per-unit rents [1200, 950, 1100] for mixed multifamily
+    listingDescription = '', // full listing description text for rent calibration
   } = req.body || {};
 
   if (!price) return res.status(400).json({ error: 'Purchase price is required.' });
@@ -299,13 +396,19 @@ export default async function handler(req, res) {
   // User override (capexOverride) always wins and bypasses PPI adjustment entirely.
   const ppiMultiplier = md.capexPpiMultiplier ?? 1.38;
   const CAPEX_BASELINE_2019 = {
-    conservative: { sfr: 200, duplex: 320, mfr: 400 },
-    moderate:     { sfr: 150, duplex: 240, mfr: 300 },
-    aggressive:   { sfr: 100, duplex: 160, mfr: 200 },
+    // Per-property monthly capex in 2019 dollars, scaled by PPI multiplier
+    // sfr_adu: two separate structures → higher than pure sfr
+    // triplex/fourplex: more units, more systems
+    conservative: { sfr: 200, sfr_adu: 280, duplex: 320, triplex: 450, fourplex: 560, mfr: 400 },
+    moderate:     { sfr: 150, sfr_adu: 210, duplex: 240, triplex: 330, fourplex: 420, mfr: 300 },
+    aggressive:   { sfr: 100, sfr_adu: 140, duplex: 160, triplex: 220, fourplex: 280, mfr: 200 },
   };
   const capexBaseline = CAPEX_BASELINE_2019[mode] || CAPEX_BASELINE_2019.moderate;
-  const propTypeBucket = propertyType === 'mfr' ? 'mfr' : propertyType === 'duplex' ? 'duplex' : 'sfr';
-  const ppiAdjustedCapex = Math.round(capexBaseline[propTypeBucket] * ppiMultiplier);
+  // Map new property types to capex bucket (condo → sfr bucket, legacy mfr stays)
+  const propTypeBucket = (['sfr_adu','duplex','triplex','fourplex','mfr'].includes(propertyType))
+    ? (propertyType === 'mfr' ? 'mfr' : propertyType)  // keep legacy mfr working
+    : 'sfr';
+  const ppiAdjustedCapex = Math.round((capexBaseline[propTypeBucket] ?? capexBaseline.sfr) * ppiMultiplier);
 
   // Phase 3: fetch per-city intelligence from cache (non-blocking — all null on miss)
   // These are populated by the weekly/monthly cron and read here for AI prompt enrichment.
@@ -383,6 +486,8 @@ export default async function handler(req, res) {
     loanType:       loanType || '30yr_fixed',
     holdingYears:   parseInt(holdingYears)   || 5,
     propertyType:   propertyType || 'sfr',
+    houseHack:      Boolean(houseHack),
+    // unitCount / effectiveRent / grossRent populated after multi-unit computation below
     hoaMonthly:     hoaMonthly ? parseFloat(hoaMonthly) : 0,
     closingCostPct: closingCostPct ? parseFloat(closingCostPct) : getClosingCostPct(md, city),
     investorGoal,
@@ -406,6 +511,72 @@ export default async function handler(req, res) {
     // Phase 5: rent growth source label (ZORI metro vs CPI national)
     rentGrowthSource: null, // filled below after ZORI lookup
   };
+
+  // ── Multi-unit income computation ────────────────────────────────────────
+  // Resolve the effective gross rent that the engine and AI use for all calculations.
+  // This is where per-unit rents, ADU rents, and house-hack adjustments are applied
+  // so the rest of the code just sees a single clean "effectiveRent" value.
+
+  const UNIT_COUNT_MAP = { sfr:1, sfr_adu:2, duplex:2, triplex:3, fourplex:4, condo:1, mfr:2 };
+  const unitCount = UNIT_COUNT_MAP[propertyType] ?? 1;
+
+  // For duplex/triplex/fourplex the UI sends per-unit rent; multiply to get total
+  const rawRentNum   = rent ? parseFloat(String(rent).replace(/[^0-9.]/g,'')) : null;
+  const rawAduRentNum = aduRent ? parseFloat(String(aduRent).replace(/[^0-9.]/g,'')) : null;
+
+  // Total gross rent from ALL units (before vacancy, before house-hack deduction)
+  let grossRent = null;
+  let unitRentsList = null; // resolved per-unit rent array for AI context
+
+  if (propertyType === 'sfr_adu') {
+    // Primary unit + ADU rent separately provided
+    const primaryRent = rawRentNum ?? 0;
+    const aduRentNum2  = rawAduRentNum ?? 0;
+    grossRent = (primaryRent + aduRentNum2) || null;
+  } else if (['duplex','triplex','fourplex'].includes(propertyType)) {
+    if (Array.isArray(unitRents) && unitRents.length === unitCount && unitRents.some(v => v > 0)) {
+      // Individual per-unit rents provided (mixed bedroom configuration)
+      unitRentsList = unitRents.map(v => parseFloat(v) || 0);
+      grossRent = unitRentsList.reduce((s, v) => s + v, 0) || null;
+    } else if (rawRentNum) {
+      // Rent sent as combined total (SFR-style entry for multi-unit)
+      grossRent = rawRentNum;
+    }
+  } else {
+    // SFR, condo, or combined rent already entered — use as-is
+    grossRent = rawRentNum;
+  }
+
+  // House hack: owner occupies Unit 1, income = remaining units only
+  // When per-unit rents are known, sum units 2+ exactly (not proportional math).
+  // Proportional math is wrong when units have different rents (2BR vs 1BR etc).
+  let incomeRent = grossRent;
+  if (houseHack && unitCount > 1) {
+    if (propertyType === 'sfr_adu') {
+      // Owner in main house → ADU rent only
+      incomeRent = rawAduRentNum || (grossRent ? grossRent / 2 : null);
+    } else if (unitRentsList && unitRentsList.length === unitCount) {
+      // Mixed-unit: sum all units except Unit 1 (owner-occupied)
+      incomeRent = unitRentsList.slice(1).reduce((s, v) => s + v, 0) || null;
+    } else {
+      // Uniform rent: (n-1)/n of gross
+      incomeRent = grossRent ? grossRent * (unitCount - 1) / unitCount : null;
+    }
+  }
+
+  // Effective rent to send to the AI and use in deterministic scoring
+  // incomeRent is what generates cashflow; grossRent is the property's total potential
+  const effectiveRent = incomeRent;
+
+  // Store on settings for downstream use (deterministic scoring, prompt construction)
+  settings.unitCount      = unitCount;
+  settings.grossRent      = grossRent;
+  settings.effectiveRent  = effectiveRent;
+  settings.houseHack      = Boolean(houseHack);
+  settings.aduRentNum     = rawAduRentNum;
+  settings.perUnitRent    = rawRentNum;  // the per-unit figure (for duplex/triplex/fourplex display)
+  settings.unitRentsList  = unitRentsList; // individual per-unit rents (mixed multifamily)
+  settings.listingDescription = listingDescription?.trim() || null;
 
   // Phase 5: Override rent growth with ZORI metro data if available and user hasn't overridden
   if (zoriData && rentGrowthOverride == null) {
@@ -473,7 +644,7 @@ export default async function handler(req, res) {
   // Tax trend: static table lookup, instantaneous, no I/O
   const taxTrend = getTaxTrendForState(stateCode);
   // STR regulation: static lookup — relevant for SFR/condo only
-  const strReg = (propertyType === 'sfr' || propertyType === 'condo' || !propertyType)
+  const strReg = (propertyType === 'sfr' || propertyType === 'sfr_adu' || propertyType === 'condo' || !propertyType)
     ? (db ? (await getStrRegulationLive(db, city?.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/_+$/,''))) || getStrRegulation(city) : getStrRegulation(city))
     : null;
 
@@ -603,10 +774,62 @@ export default async function handler(req, res) {
     '===',
   ].filter(Boolean).join('\n') : '';
 
+  // ── Pre-compute deterministic sub-scores server-side ─────────────────────
+  // These are mathematically exact from the user's inputs and will be injected
+  // into the prompt and then used to OVERRIDE the final overallScore after parsing.
+  // This ensures identical inputs always produce identical scores.
+  const priceNum = parseFloat(String(price).replace(/[^0-9.]/g, '')) || 0;
+  // Use effectiveRent (already accounting for ADU, per-unit multiplication, house hack)
+  // for all deterministic scoring — not the raw rent field from the request body.
+  const serverMetrics = computeServerSideMetrics(priceNum, settings.effectiveRent ?? null, settings);
+
+  // landlordScore: extract from the landlordLawBlock we already built
+  let serverLandlordScore = null;
+  const lsMatch = landlordLawBlock.match(/Landlord-friendliness score \(0[–-]100\):\s*(\d+)/);
+  if (lsMatch) serverLandlordScore = parseInt(lsMatch[1]);
+
+  // Build the deterministic scores injection block
+  const deterministicScoreBlock = [
+    '',
+    '=== PRE-COMPUTED SCORES (server-calculated from exact inputs — USE THESE EXACT VALUES) ===',
+    ...(serverMetrics?.hasRent ? [
+      `cashflowScore: ${serverMetrics.cashflowScore} — derived from CoC of ${serverMetrics.coc}%`,
+      `onePercentScore: ${serverMetrics.onePercentScore} — derived from rent/price of ${serverMetrics.rentPct}%`,
+      `Server-verified cashflow: $${serverMetrics.cashflow}/mo — your cashflow calculation must match this within $5`,
+    ] : [
+      'cashflowScore: compute from your estimated rent (no pre-computed value — rent not provided)',
+      'onePercentScore: compute from your estimated rent (no pre-computed value — rent not provided)',
+    ]),
+    serverLandlordScore !== null
+      ? `landlordScore: ${serverLandlordScore} — from live LANDLORD_LAWS database. Use this exact value. Adjust ±3 pts maximum for city-specific factors only.`
+      : 'landlordScore: compute from landlord law data above',
+    'locationScore: your judgment (0-100) — based on location quality, infrastructure, job market',
+    'marketScore: your judgment (0-100) — based on all market data above',
+    'CRITICAL: Copy the pre-computed scores above verbatim into scoreBreakdown. Do NOT recalculate them.',
+    '===',
+  ].join('\n');
+
   const userMsg = [
     listingUrl ? `Listing URL: ${listingUrl}` : '',
     `Purchase price: ${price}`,
-    rent ? `Monthly rent (confirmed): ${rent}` : 'Monthly rent: NOT PROVIDED - estimate from comps.',
+    // Rent context depends on property structure
+    (() => {
+      const s = settings;
+      if (s.propertyType === 'sfr_adu') {
+        const primary = s.perUnitRent ? `$${s.perUnitRent}/mo` : 'not provided';
+        const adu     = s.aduRentNum  ? `$${s.aduRentNum}/mo`  : 'not provided — estimate from local ADU comps';
+        const income  = s.effectiveRent ? `$${Math.round(s.effectiveRent)}/mo` : 'estimate both';
+        return `SFR+ADU rent breakdown: Primary unit = ${primary} | ADU = ${adu} | Effective income = ${income}${s.houseHack ? ' (house hack: ADU income only)' : ''}`;
+      }
+      if (['duplex','triplex','fourplex'].includes(s.propertyType)) {
+        const perUnit = s.perUnitRent ? `$${s.perUnitRent}/unit/mo` : 'not provided — estimate from local comps';
+        const gross   = s.grossRent   ? `$${Math.round(s.grossRent)}/mo` : 'estimate';
+        const income  = s.effectiveRent ? `$${Math.round(s.effectiveRent)}/mo` : gross;
+        return `${s.propertyType.charAt(0).toUpperCase()+s.propertyType.slice(1)} rent: ${perUnit} × ${s.unitCount} units = ${gross} gross${s.houseHack ? ` | House hack: ${income} net income (${s.unitCount-1} rented units)` : ''}`;
+      }
+      if (s.effectiveRent) return `Monthly rent (confirmed): $${Math.round(s.effectiveRent)}/mo`;
+      return 'Monthly rent: NOT PROVIDED - estimate from comps.';
+    })(),
     beds  ? `Bedrooms: ${beds}`   : '',
     baths ? `Bathrooms: ${baths}` : '',
     sqft  ? `Sq ft: ${sqft}`      : '',
@@ -620,7 +843,8 @@ export default async function handler(req, res) {
     settings.hoaMonthly > 0 ? `HOA fee: $${settings.hoaMonthly}/mo - include in expense breakdown` : '',
     settings.closingCostPct > 0 ? `Closing costs: ${settings.closingCostPct}% of price - add to cash invested for CoC calc` : '',
     !cashPurchase && settings.downPaymentPct < 20 ? `PMI: $${settings.pmiMonthly}/mo (pre-computed for ${settings.downPaymentPct}% down — include this exact amount in expense breakdown)` : '',
-    `Property type: ${({sfr:'Single-family home',duplex:'Duplex (2 units)',condo:'Condo',mfr:'Multi-family 3-4 units'}[settings.propertyType]||'Single-family home')}`,
+    `Property type: ${({sfr:'Single-family home',sfr_adu:'SFR with ADU/Guest House',duplex:'Duplex (2 units)',triplex:'Triplex (3 units)',fourplex:'Fourplex (4 units)',condo:'Condo',mfr:'Multi-family 3-4 units'}[settings.propertyType]||'Single-family home')}`,
+    settings.houseHack ? `House hack strategy: YES — owner occupies one unit. Income = ${settings.unitCount-1} of ${settings.unitCount} units. Frame CoC as housing cost offset vs pure investment return. Note FHA/conventional owner-occupied financing may be available.` : '',
     `Holding period: ${settings.holdingYears} years`,
     taxUserProvided
       ? `Property tax (from listing): $${String(taxAnnualAmount).replace(/[^0-9.]/g,'')} annually = ${taxRate.toFixed(3)}% of price`
@@ -786,6 +1010,34 @@ export default async function handler(req, res) {
       ].filter(Boolean).join('\n');
     })(),
 
+    deterministicScoreBlock,
+
+    // Listing description — highest-priority rent calibration signal
+    settings.listingDescription ? [
+      '',
+      '=== LISTING DESCRIPTION (agent-provided — read carefully for rent calibration) ===',
+      settings.listingDescription,
+      '',
+      'REQUIRED: Identify any renovation mentions (kitchen, bath, HVAC, roof, flooring, windows)',
+      'and premium features (hardwood, granite, stainless, pool, garage, views, permits).',
+      'Adjust rent estimate UP or DOWN based on condition and finishes vs market baseline.',
+      'Quantify the adjustment: "Kitchen renovation adds $75-125/mo to market rent for this unit size."',
+      'If the listing mentions deferred maintenance, cosmetic issues, or dated finishes, note rent drag.',
+      '===',
+    ].join('\n') : '',
+
+    // Unit-by-unit rent breakdown for mixed multifamily
+    settings.unitRentsList ? [
+      '',
+      `=== UNIT-BY-UNIT RENT BREAKDOWN (${settings.propertyType}) ===`,
+      ...settings.unitRentsList.map((r, i) => `Unit ${i+1}: $${Math.round(r)}/mo`),
+      `Total gross rent: $${Math.round(settings.grossRent || 0)}/mo`,
+      settings.houseHack ? `House hack: Unit 1 owner-occupied. Income from Units 2-${settings.unitCount}: $${Math.round(settings.effectiveRent || 0)}/mo` : '',
+      'REQUIRED: Analyze each unit's rent relative to local market for that bedroom count.',
+      'If per-unit rents differ significantly, explain why (sq ft, condition, floor level, etc.).',
+      '===',
+    ].filter(Boolean).join('\n') : '',
+
     '',
     'Use these numbers exactly.',
   ].filter(Boolean).join('\n');
@@ -793,7 +1045,7 @@ export default async function handler(req, res) {
   const geminiPayload = {
     system_instruction: { parts: [{ text: SYSTEM_PROMPT_TEMPLATE(settings) }] },
     contents: [{ role: 'user', parts: [{ text: userMsg }] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 16000 },
+    generationConfig: { temperature: 0, maxOutputTokens: 16000 },
   };
 
   let geminiRes, modelUsed;
@@ -850,6 +1102,89 @@ export default async function handler(req, res) {
   }
 
   data._settings = settings;
+
+  // ── Deterministic score override ──────────────────────────────────────────
+  // Recompute overallScore server-side from sub-scores so identical inputs
+  // always produce an identical final score regardless of LLM sampling variance.
+  //
+  // Strategy:
+  // - cashflowScore, onePercentScore: use server-computed values if rent was known,
+  //   otherwise use whatever Gemini returned (rent had to be estimated)
+  // - landlordScore: use server-computed value from LANDLORD_LAWS if available,
+  //   otherwise cap Gemini's value to ±3 pts of the database value
+  // - locationScore, marketScore: keep Gemini's values (genuinely judgment-based)
+  //   but clamp to valid range
+  //
+  // The final overallScore is ALWAYS recomputed from the sub-scores here,
+  // never taken raw from Gemini's output.
+  (() => {
+    try {
+      const weights = GOAL_WEIGHTS[settings.investorGoal] || GOAL_WEIGHTS.balanced;
+
+      // Parse Gemini's scoreBreakdown into a map by name prefix
+      const sb = Array.isArray(data.scoreBreakdown) ? data.scoreBreakdown : [];
+      const findScore = (prefix) => {
+        const entry = sb.find(e => e?.name?.toLowerCase().startsWith(prefix.toLowerCase()));
+        return entry?.score != null ? Math.min(100, Math.max(0, Math.round(Number(entry.score)))) : null;
+      };
+
+      // Get Gemini's sub-scores for judgment-based dimensions
+      const aiLocationScore = findScore('Location') ?? 60;
+      const aiMarketScore   = findScore('Market')   ?? 60;
+
+      // Get Gemini's cashflow/onePercent scores — used only if server couldn't compute them
+      const aiCashflowScore    = findScore('Cash') ?? 50;
+      const aiOnePercentScore  = findScore('1%')   ?? 50;
+
+      // Determine final sub-scores
+      const finalCashflowScore    = (serverMetrics?.hasRent)     ? serverMetrics.cashflowScore   : aiCashflowScore;
+      const finalOnePercentScore  = (serverMetrics?.hasRent)     ? serverMetrics.onePercentScore : aiOnePercentScore;
+      const finalLandlordScore    = serverLandlordScore !== null  ? serverLandlordScore           : (findScore('Landlord') ?? 60);
+      const finalLocationScore    = Math.min(100, Math.max(0, aiLocationScore));
+      const finalMarketScore      = Math.min(100, Math.max(0, aiMarketScore));
+
+      // Recompute overallScore with exact weights
+      const recomputed = Math.round(
+        finalCashflowScore   * weights.cashflow   +
+        finalLocationScore   * weights.location   +
+        finalOnePercentScore * weights.onePercent +
+        finalMarketScore     * weights.market     +
+        finalLandlordScore   * weights.landlord
+      );
+
+      // Override scoreBreakdown with the deterministic values
+      const nameMap = {
+        cashflow:   `Cash Flow (${Math.round(weights.cashflow * 100)}%)`,
+        location:   `Location (${Math.round(weights.location * 100)}%)`,
+        onePercent: `1% Rule (${Math.round(weights.onePercent * 100)}%)`,
+        market:     `Market Growth (${Math.round(weights.market * 100)}%)`,
+        landlord:   `Landlord Laws (${Math.round(weights.landlord * 100)}%)`,
+      };
+      data.scoreBreakdown = [
+        { name: nameMap.cashflow,   score: finalCashflowScore   },
+        { name: nameMap.location,   score: finalLocationScore   },
+        { name: nameMap.market,     score: finalMarketScore     },
+        { name: nameMap.onePercent, score: finalOnePercentScore },
+        { name: nameMap.landlord,   score: finalLandlordScore   },
+      ];
+      data.overallScore = recomputed;
+
+      // Tag the response so client can confirm deterministic scoring was applied
+      data._scoreDeterministic = true;
+      data._scoreDebug = {
+        cashflowScore: finalCashflowScore,
+        locationScore: finalLocationScore,
+        marketScore:   finalMarketScore,
+        onePercentScore: finalOnePercentScore,
+        landlordScore: finalLandlordScore,
+        serverMetricsUsed: serverMetrics?.hasRent ?? false,
+        serverLandlordUsed: serverLandlordScore !== null,
+      };
+    } catch (scoreErr) {
+      // Never crash the response over scoring — just log and continue with AI's score
+      console.error('Score override error:', scoreErr?.message);
+    }
+  })();
 
   // Phase 6: attach supply/demand data to response so UI can show new cards
   // without needing a separate API call

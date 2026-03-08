@@ -36,12 +36,14 @@ import crypto                  from 'crypto';
 //
 
 // ── Constants (defined before handler — const is not hoisted) ────────────────
+const GOOGLEBOT_UA   = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)';
+const BINGBOT_UA     = 'Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)';
 const FACEBOOKBOT_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
 const TWITTERBOT_UA  = 'Twitterbot/1.0';
-const LINKEDINBOT_UA = 'LinkedInBot/1.0 (compatible; Mozilla/5.0)';
-const SOCIAL_UAS     = [FACEBOOKBOT_UA, TWITTERBOT_UA, LINKEDINBOT_UA];
+// Googlebot first — Zillow/Redfin MUST whitelist it for SEO indexing
+const FETCH_UAS      = [GOOGLEBOT_UA, BINGBOT_UA, FACEBOOKBOT_UA, TWITTERBOT_UA];
 let _uaIdx = 0;
-function nextSocialUA() { return SOCIAL_UAS[(_uaIdx++) % SOCIAL_UAS.length]; }
+function nextSocialUA() { return FETCH_UAS[(_uaIdx++) % FETCH_UAS.length]; }
 
 const CORE_FIELDS    = ['price', 'beds', 'baths', 'sqft', 'year', 'city'];
 const ALL_FIELDS     = ['price', 'rent', 'beds', 'baths', 'sqft', 'year', 'city', 'taxAnnual', 'hoaMonthly'];
@@ -93,7 +95,7 @@ export default async function handler(req, res) {
     setTimeout(() => ctrl.abort(), 4000);
     const r = await fetch(url, {
       method: 'HEAD',
-      headers: { 'User-Agent': FACEBOOKBOT_UA },
+      headers: { 'User-Agent': GOOGLEBOT_UA },
       signal: ctrl.signal,
       redirect: 'follow',
     });
@@ -109,7 +111,9 @@ export default async function handler(req, res) {
   const address = extractAddressFromUrl(resolvedUrl) || extractAddressFromUrl(url);
 
   // ── Layer 1: Supabase cache lookup ────────────────────────────────────────
-  const cacheKey = 'listing:' + crypto.createHash('sha256')
+  // Cache key versioned with 'v2' so pre-v53 entries (without listingDescription)
+  // are automatically bypassed. Users will re-fetch once; new results include description.
+  const cacheKey = 'listing:v2:' + crypto.createHash('sha256')
     .update(normalizeUrl(resolvedUrl)).digest('hex').slice(0, 32);
 
   let supabase = null;
@@ -171,6 +175,13 @@ export default async function handler(req, res) {
       if (aiData.city && !result.city) {
         result.city  = aiData.city;
         confMap.city = 'high';
+      }
+      // Pass through non-numeric fields from AI
+      if (aiData.listingDescription && !result.listingDescription) {
+        result.listingDescription = aiData.listingDescription;
+      }
+      if (Array.isArray(aiData.unitRents) && !result.unitRents) {
+        result.unitRents = aiData.unitRents;
       }
     }
   } catch (_) {
@@ -240,6 +251,7 @@ export default async function handler(req, res) {
     warning = `Filled ${populated.length} field${populated.length > 1 ? 's' : ''} — please complete the rest.`;
   }
 
+  // Pass non-numeric fields through separately (they're not in populated/failed tracking)
   const payload = { ...result, populated, failed, confidence: confMap, blocked: false, warning, _aiUsed: aiSucceeded };
 
   // ── Write to cache (fire-and-forget, don't block response) ────────────────
@@ -279,7 +291,8 @@ const STREET_SUFFIXES = [
 
 function emptyResult() {
   return { price:null, rent:null, beds:null, baths:null, sqft:null, year:null,
-           city:null, taxAnnual:null, hoaMonthly:null };
+           city:null, taxAnnual:null, hoaMonthly:null,
+           listingDescription:null, unitRents:null };
 }
 
 const jld  = v => ({ value: v, tier: 'jsonld' });
@@ -430,11 +443,11 @@ async function fetchOgMeta(url) {
       const reader  = res.body.getReader();
       const decoder = new TextDecoder();
 
-      while (html.length < 15_000) {
+      while (html.length < 80_000) {
         const { value, done } = await reader.read();
         if (done) break;
         html += decoder.decode(value, { stream: true });
-        if (html.includes('</head>') || html.toLowerCase().includes('<body')) break;
+        if (html.includes('__NEXT_DATA__') && html.length > 20_000) break; // got the data script
       }
       reader.cancel().catch(() => {});
     } finally {
@@ -448,6 +461,43 @@ async function fetchOgMeta(url) {
 
 function parseHead(html) {
   const r = emptyResult();
+
+  // ── __NEXT_DATA__ (Zillow + Redfin server-rendered React data) ──────────────
+  // Next.js sites embed all page props in a <script id="__NEXT_DATA__"> tag.
+  // This is the most reliable source — full structured data, not just og:meta.
+  const ndMatch = html.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (ndMatch) {
+    try {
+      const nd = JSON.parse(ndMatch[1]);
+      // Zillow: props.pageProps.componentProps or .gdpClientCache
+      const zp = nd?.props?.pageProps;
+      const zdp = zp?.componentProps?.gdpClientCache
+        ? Object.values(zp.componentProps.gdpClientCache)[0]?.property
+        : zp?.componentProps?.initialReduxState?.gdp?.fullPageData?.property
+          || zp?.componentProps;
+      if (zdp) {
+        if (zdp.price && !r.price)       r.price = jld(parseInt(zdp.price));
+        if (zdp.bedrooms && !r.beds)     r.beds  = jld(parseFloat(zdp.bedrooms));
+        if (zdp.bathrooms && !r.baths)   r.baths = jld(parseFloat(zdp.bathrooms));
+        if (zdp.livingArea && !r.sqft)   r.sqft  = jld(parseInt(zdp.livingArea));
+        if (zdp.yearBuilt && !r.year)    r.year  = jld(parseInt(zdp.yearBuilt));
+        if (zdp.taxAnnualAmount && !r.taxAnnual) r.taxAnnual = jld(parseFloat(zdp.taxAnnualAmount));
+        if (zdp.monthlyHoaFee != null && !r.hoaMonthly) r.hoaMonthly = jld(parseFloat(zdp.monthlyHoaFee));
+        if (zdp.address?.city && zdp.address?.state && !r.city)
+          r.city = jld(\`\${zdp.address.city}, \${zdp.address.state}\`);
+      }
+      // Redfin: props.pageProps.reduxStore or .serverSideData
+      const rfp = nd?.props?.pageProps?.reduxStore?.mediaData
+        || nd?.props?.pageProps?.serverSideData?.listingData;
+      if (rfp) {
+        if (rfp.listingPrice?.amount && !r.price)  r.price = jld(parseInt(rfp.listingPrice.amount));
+        if (rfp.beds && !r.beds)                   r.beds  = jld(parseFloat(rfp.beds));
+        if (rfp.baths && !r.baths)                 r.baths = jld(parseFloat(rfp.baths));
+        if (rfp.sqFt?.value && !r.sqft)            r.sqft  = jld(parseInt(rfp.sqFt.value));
+        if (rfp.yearBuilt?.value && !r.year)        r.year  = jld(parseInt(rfp.yearBuilt.value));
+      }
+    } catch (_) {}
+  }
 
   // ── JSON-LD structured data (highest quality) ─────────────────────────────
   // All three sites include schema.org/SingleFamilyResidence or /Apartment JSON-LD

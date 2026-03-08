@@ -20,7 +20,7 @@ export function useReveal(threshold = 0.08) {
   }, [threshold]);
   return [ref, visible];
 }
-import { C, MODES, MODE_DEFAULTS, LOADING_STEPS, LOAN_TYPES, PROPERTY_TYPES, EMPTY_PROFILE, inputBase, clamp, scoreColor } from './tokens';
+import { C, MODES, MODE_DEFAULTS, LOADING_STEPS, LOAN_TYPES, PROPERTY_TYPES, SUPPORTS_HOUSEHACK, UNIT_COUNT, EMPTY_PROFILE, inputBase, clamp, scoreColor } from './tokens';
 import { getStateTaxRate, getInsRate, getStateAppreciation, getMgmtRateBenchmark, getClosingCostForState, getPmiRateForDown, getMarketData } from './marketHelpers';
 
 // ── Inline-editable numeric value ─────────────────────────────────────────────
@@ -319,11 +319,16 @@ export function StepProperty({ fields, setField, errors, adv, setAdv, mode, setM
       {/* Property Type */}
       <div>
         <Label>Property type</Label>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:6 }}>
           {PROPERTY_TYPES.map(pt => {
             const active = (fields.propertyType || 'sfr') === pt.key;
             return (
-              <button key={pt.key} onClick={() => setField('propertyType')(pt.key)}
+              <button key={pt.key} onClick={() => {
+                setField('propertyType')(pt.key);
+                // Clear ADU rent when leaving sfr_adu; clear houseHack when leaving multi-unit
+                if (pt.key !== 'sfr_adu') setField('aduRent')('');
+                if (!SUPPORTS_HOUSEHACK.has(pt.key)) setField('houseHack')(false);
+              }}
                 style={{ background:active ? C.green : C.white, border:`1.5px solid ${active ? C.green : C.border}`, borderRadius:8, padding:'10px 4px', cursor:'pointer', fontFamily:'inherit', textAlign:'center', transition:'all 0.15s' }}>
                 <div style={{ fontSize:12, fontWeight:700, color:active ? '#fff' : C.text }}>{pt.label}</div>
                 <div style={{ fontSize:10, color:active ? 'rgba(255,255,255,0.7)' : C.muted }}>{pt.desc}</div>
@@ -332,10 +337,26 @@ export function StepProperty({ fields, setField, errors, adv, setAdv, mode, setM
           })}
         </div>
         {fields.propertyType === 'condo' && !fields.hoaMonthly && (
-          <p style={{ fontSize:10, color:C.amber, margin:'4px 0 0' }}>Condos usually have HOA fees - enter monthly amount below</p>
+          <p style={{ fontSize:10, color:C.amber, margin:'4px 0 0' }}>Condos usually have HOA fees — enter monthly amount below</p>
         )}
-        {(fields.propertyType === 'duplex' || fields.propertyType === 'mfr') && (
-          <p style={{ fontSize:10, color:C.green, margin:'4px 0 0' }}>Multi-unit: enter combined rent from all units</p>
+        {fields.propertyType === 'sfr_adu' && (
+          <p style={{ fontSize:10, color:C.green, margin:'4px 0 0' }}>Enter rent for each structure separately below — they have independent vacancy risk</p>
+        )}
+        {(fields.propertyType === 'duplex' || fields.propertyType === 'triplex' || fields.propertyType === 'fourplex') && (
+          <p style={{ fontSize:10, color:C.green, margin:'4px 0 0' }}>Enter per-unit rent — the engine applies vacancy to each unit independently</p>
+        )}
+        {/* House-hack toggle — shown for any multi-unit type */}
+        {SUPPORTS_HOUSEHACK.has(fields.propertyType) && (
+          <label style={{ display:'flex', alignItems:'center', gap:8, marginTop:8, cursor:'pointer' }}>
+            <div onClick={() => setField('houseHack')(!fields.houseHack)}
+              style={{ width:34, height:18, borderRadius:9, background:fields.houseHack ? C.green : C.border, position:'relative', transition:'background 0.2s', flexShrink:0, cursor:'pointer' }}>
+              <div style={{ position:'absolute', top:2, left:fields.houseHack ? 16 : 2, width:14, height:14, borderRadius:'50%', background:'#fff', transition:'left 0.2s' }}/>
+            </div>
+            <span style={{ fontSize:11, color:C.text, fontWeight:600 }}>House hack — I'll live in one unit</span>
+            {fields.houseHack && (
+              <span style={{ fontSize:10, color:C.muted }}>Only other units' rent counts as income</span>
+            )}
+          </label>
         )}
       </div>
 
@@ -384,21 +405,44 @@ export function StepProperty({ fields, setField, errors, adv, setAdv, mode, setM
         );
       })()}
 
-      {/* Price + Rent — always show price; hide rent if auto-filled cleanly */}
+      {/* Price + Rent — context-aware based on property type */}
       <div className="riq-g2" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
         <AutoField id="price" label="Purchase Price" required value={fields.price} onChange={setField('price')} placeholder="$145,000" errMsg={errors.price} status={fieldStatus.price}/>
-        {fieldNeedsAttention('rent') && (
-          <AutoField id="rent"  label="Monthly Rent" optional value={fields.rent} onChange={setField('rent')} placeholder="$1,200/mo" hint="Blank = AI estimates" status={fieldStatus.rent}/>
+        {/* SFR / Condo: single rent field */}
+        {(fields.propertyType === 'sfr' || fields.propertyType === 'condo' || !fields.propertyType) && fieldNeedsAttention('rent') && (
+          <AutoField id="rent" label="Monthly Rent" optional value={fields.rent} onChange={setField('rent')} placeholder="$1,200/mo" hint="Blank = AI estimates" status={fieldStatus.rent}/>
         )}
       </div>
+      {/* SFR+ADU: two separate rent fields */}
+      {fields.propertyType === 'sfr_adu' && (
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <AutoField id="rent" label="Main house rent" optional value={fields.rent} onChange={setField('rent')} placeholder="$1,400/mo" hint="Primary unit only — not ADU" status={fieldStatus.rent}/>
+          <div>
+            <label style={{ fontSize:11, fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase', color:C.muted, display:'block', marginBottom:7 }}>ADU / Guest house rent <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10, color:C.muted }}>(optional)</span></label>
+            <div style={{ position:'relative' }}>
+              <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', fontSize:14, color:C.muted }}>$</span>
+              <input type="text" value={fields.aduRent||''} onChange={e => setField('aduRent')(e.target.value)}
+                placeholder="600/mo" style={{ ...inputBase, paddingLeft:24 }}/>
+            </div>
+            <p style={{ fontSize:10, color:C.muted, margin:'3px 0 0' }}>ADUs typically have 10–15% higher vacancy</p>
+          </div>
+        </div>
+      )}
 
       {/* Property details — show only fields not cleanly auto-filled */}
       {(fieldNeedsAttention('beds') || fieldNeedsAttention('baths') || fieldNeedsAttention('sqft') || fieldNeedsAttention('year')) && (
-        <div className="riq-g2" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          {fieldNeedsAttention('beds')  && <AutoField id="beds"  label="Bedrooms"   required value={fields.beds}  onChange={setField('beds')}  placeholder="3"     errMsg={errors.beds}  status={fieldStatus.beds}/>}
-          {fieldNeedsAttention('baths') && <AutoField id="baths" label="Bathrooms"  required value={fields.baths} onChange={setField('baths')} placeholder="2"     errMsg={errors.baths} status={fieldStatus.baths}/>}
-          {fieldNeedsAttention('sqft')  && <AutoField id="sqft"  label="Sq Footage" required value={fields.sqft}  onChange={setField('sqft')}  placeholder="1,200" errMsg={errors.sqft}  status={fieldStatus.sqft}/>}
-          {fieldNeedsAttention('year')  && <AutoField id="year"  label="Year Built" required value={fields.year}  onChange={setField('year')}  placeholder="1987"  errMsg={errors.year}  status={fieldStatus.year}/>}
+        <div>
+          <div className="riq-g2" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+            {fieldNeedsAttention('beds')  && <AutoField id="beds"  label="Bedrooms"   required value={fields.beds}  onChange={setField('beds')}  placeholder="3"     errMsg={errors.beds}  status={fieldStatus.beds}/>}
+            {fieldNeedsAttention('baths') && <AutoField id="baths" label="Bathrooms"  required value={fields.baths} onChange={setField('baths')} placeholder="2"     errMsg={errors.baths} status={fieldStatus.baths}/>}
+            {fieldNeedsAttention('sqft')  && <AutoField id="sqft"  label="Sq Footage" required value={fields.sqft}  onChange={setField('sqft')}  placeholder="1,200" errMsg={errors.sqft}  status={fieldStatus.sqft}/>}
+            {fieldNeedsAttention('year')  && <AutoField id="year"  label="Year Built" required value={fields.year}  onChange={setField('year')}  placeholder="1987"  errMsg={errors.year}  status={fieldStatus.year}/>}
+          </div>
+          {['duplex','triplex','fourplex'].includes(fields.propertyType) && (
+            <p style={{ fontSize:10.5, color:C.muted, margin:'6px 0 0', lineHeight:1.5 }}>
+              For multi-unit listings, enter the <strong>total</strong> bedrooms and bathrooms across all units — e.g. a fourplex with four 2BR units = 8 bedrooms total.
+            </p>
+          )}
         </div>
       )}
 
@@ -407,6 +451,67 @@ export function StepProperty({ fields, setField, errors, adv, setAdv, mode, setM
         <AutoField id="city" label="City / State" required value={fields.city} onChange={setField('city')}
           placeholder="Austin, TX" hint="Sets state-specific tax & insurance rates" errMsg={errors.city} status={fieldStatus.city}/>
       )}
+
+
+      {/* ── Unit-by-unit rents — shown AFTER beds/sqft/year so user knows unit mix first ── */}
+      {(fields.propertyType === 'duplex' || fields.propertyType === 'triplex' || fields.propertyType === 'fourplex') && (() => {
+        const n = UNIT_COUNT[fields.propertyType];
+        const rents = Array.from({ length: n }, (_, i) => (fields.unitRents || [])[i] || '');
+        const total = rents.reduce((s, v) => s + (parseFloat(String(v).replace(/[^0-9.]/g,''))||0), 0);
+        const allFilled = rents.every(v => v.trim());
+        const noneEntered = rents.every(v => !v.trim());
+        return (
+          <div style={{ background:C.soft, border:`1px solid ${C.border}`, borderRadius:12, padding:'14px 14px 10px' }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+              <span style={{ fontSize:11, fontWeight:700, letterSpacing:'0.08em', textTransform:'uppercase', color:C.muted }}>
+                Rent by unit
+                <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10, marginLeft:6 }}>
+                  {noneEntered ? '(optional — leave blank for AI estimate)' : allFilled ? '— all units entered' : '— partial OK'}
+                </span>
+              </span>
+              {total > 0 && (
+                <span style={{ fontSize:12, fontWeight:700, color:C.green }}>
+                  Total: ${total.toLocaleString()}/mo
+                </span>
+              )}
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {rents.map((val, i) => (
+                <div key={i} style={{ display:'grid', gridTemplateColumns:'72px 1fr', gap:10, alignItems:'center' }}>
+                  <span style={{ fontSize:12, fontWeight:600, color:C.muted }}>Unit {i+1}</span>
+                  <div style={{ position:'relative' }}>
+                    <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', fontSize:13, color:C.muted, pointerEvents:'none' }}>$</span>
+                    <input
+                      type="text"
+                      value={val}
+                      onChange={e => {
+                        const next = Array.from({ length: n }, (_, j) => (fields.unitRents || [])[j] || '');
+                        next[i] = e.target.value;
+                        setField('unitRents')(next);
+                        // Always sync fields.rent to total — even when clearing (t=0 → empty string)
+                        const t = next.reduce((s, v) => s + (parseFloat(String(v).replace(/[^0-9.]/g,''))||0), 0);
+                        setField('rent')(t > 0 ? String(t) : '');
+                      }}
+                      placeholder="/mo"
+                      style={{ ...inputBase, paddingLeft:26, fontSize:13, padding:'9px 12px 9px 26px' }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+            {fields.houseHack && (
+              <p style={{ fontSize:10, color:C.amber, margin:'8px 0 0', lineHeight:1.5 }}>
+                House hack: Unit 1 is owner-occupied. Only Units 2–{n} count as rental income.
+              </p>
+            )}
+            {noneEntered && (
+              <p style={{ fontSize:10, color:C.muted, margin:'8px 0 0', lineHeight:1.5 }}>
+                Different bedroom counts command different rents. Enter each separately for the most accurate analysis.
+              </p>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Tax */}
       <div>
@@ -443,6 +548,29 @@ export function StepProperty({ fields, setField, errors, adv, setAdv, mode, setM
           {errors.hoaMonthly && <p style={{ fontSize:11, color:C.red, margin:'4px 0 0' }}>{errors.hoaMonthly}</p>}
         </div>
         <p style={{ fontSize:11, color:C.muted, margin:'5px 0 0', lineHeight:1.5 }}>Enter 0 if this property has no HOA.</p>
+      </div>
+
+      {/* Listing Description — auto-scraped or user-pasted */}
+      <div>
+        <label style={{ fontSize:11, fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase', color:C.muted, display:'flex', alignItems:'center', gap:6, marginBottom:7, flexWrap:'wrap' }}>
+          Listing Description
+          <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10 }}>(optional)</span>
+          {fields.listingDescription && fields.listingDescription.trim().length > 20
+            ? <span style={{ fontSize:10, fontWeight:700, color:C.green, background:C.greenBg, border:`1px solid ${C.greenBorder}`, borderRadius:100, padding:'1px 7px' }}>✓ included in analysis</span>
+            : null}
+        </label>
+        <textarea
+          value={fields.listingDescription || ''}
+          onChange={e => setField('listingDescription')(e.target.value)}
+          placeholder="Paste the agent's description from the listing. Renovations, finishes, and condition affect what tenants will pay — the AI reads this and adjusts rent estimates accordingly."
+          rows={3}
+          style={{ ...inputBase, resize:'vertical', lineHeight:1.6, fontSize:12.5, minHeight:72, padding:'11px 14px' }}
+        />
+        {(!fields.listingDescription || !fields.listingDescription.trim()) && (
+          <p style={{ fontSize:10.5, color:C.muted, margin:'5px 0 0', lineHeight:1.5 }}>
+            Kitchen/bath renovations, hardwood floors, new HVAC — these details can shift rent estimates by $50–200/mo.
+          </p>
+        )}
       </div>
 
       {/* Mode */}
@@ -505,16 +633,22 @@ export function InputForm({ fields, setField, errors, adv, setAdv, mode, setMode
   const [formStep, setFormStep] = useState(fields.price ? 1 : 0);
   useEffect(() => { if (fetchStatus === 'done' || fields.price) setFormStep(1); }, [fetchStatus, fields.price]);
 
-  const rentProvided = Boolean(fields.rent.trim());
-  const allRequiredFilled = fields.price.trim() && fields.city.trim() && fields.beds.toString().trim() &&
-    fields.baths.toString().trim() && fields.sqft.toString().trim() && fields.year.toString().trim() &&
-    fields.taxAnnual.toString().trim() && fields.hoaMonthly.toString().trim() !== '';
+  // Rent is "provided" if the legacy rent field has a value, OR any unit-specific rent is entered
+  const unitRentsHaveValues = Array.isArray(fields.unitRents) && fields.unitRents.some(v => v && String(v).trim());
+  const rentProvided = Boolean(fields.rent.trim()) || unitRentsHaveValues;
+  const isMFR = ['duplex','triplex','fourplex'].includes(fields.propertyType || 'sfr');
+  const allRequiredFilled = !!(
+    fields.price?.trim() && fields.city?.trim() &&
+    fields.beds?.toString().trim() && fields.baths?.toString().trim() &&
+    fields.sqft?.toString().trim() && fields.year?.toString().trim() &&
+    fields.taxAnnual?.toString().trim() && fields.hoaMonthly?.toString().trim() !== ''
+  );
   const filled = [fields.price, fields.beds, fields.baths, fields.sqft, fields.year, fields.city].filter(Boolean).length;
 
   let confColor = C.red, confText = 'Fill in all required fields above before analyzing.';
-  if (allRequiredFilled && rentProvided)  { confColor = C.green; confText = 'All fields complete - analysis will be precise.'; }
-  else if (allRequiredFilled)             { confColor = C.amber; confText = 'Ready to analyze. Rent will be estimated by AI.'; }
-  else if (rentProvided || filled >= 4)   { confColor = C.amber; confText = 'Almost there - fill in remaining fields to unlock analysis.'; }
+  if (allRequiredFilled && rentProvided)  { confColor = C.green; confText = isMFR ? 'All fields complete — unit rents included.' : 'All fields complete — analysis will be precise.'; }
+  else if (allRequiredFilled)             { confColor = C.amber; confText = isMFR ? 'Ready to analyze. Enter unit rents above for the most accurate result.' : 'Ready to analyze. Rent will be estimated by AI.'; }
+  else if (rentProvided || filled >= 4)   { confColor = C.amber; confText = 'Almost there — fill in the remaining fields to run analysis.'; }
 
   return (
     <Card>
@@ -561,10 +695,32 @@ export function ConfirmCard({ fields, adv, mode, profile, onConfirm, onBack }) {
   const goal          = { cashflow:'Income-Focused', appreciation:'Appreciation', balanced:'Balanced Return', tax:'Tax & Equity' }[profile.goal] || profile.goal;
   const holdYrs       = profile.holdingYears || '5';
   const propTypeLabel = PROPERTY_TYPES.find(pt => pt.key === (fields.propertyType || 'sfr'))?.label || 'SFR';
-  const extras        = [
+  const isMFR         = ['duplex','triplex','fourplex'].includes(fields.propertyType || 'sfr');
+  const isSFRADU      = fields.propertyType === 'sfr_adu';
+  const unitRentsHaveValues = Array.isArray(fields.unitRents) && fields.unitRents.some(v => v && String(v).trim());
+
+  // Build the income summary line for multi-unit types
+  const incomeChip = (() => {
+    if (isMFR && unitRentsHaveValues) {
+      const total = (fields.unitRents || []).reduce((s, v) => s + (parseFloat(String(v).replace(/[^0-9.]/g,''))||0), 0);
+      const label = fields.houseHack
+        ? `House hack · $${total.toLocaleString()}/mo gross`
+        : `$${total.toLocaleString()}/mo gross`;
+      return { icon:'💵', label };
+    }
+    if (isSFRADU) {
+      const parts = [fields.rent && `Primary $${fields.rent}`, fields.aduRent && `ADU $${fields.aduRent}`].filter(Boolean);
+      if (parts.length) return { icon:'💵', label: parts.join(' + ') + '/mo' };
+    }
+    if (fields.rent) return { icon:'💵', label:`Rent $${fields.rent}/mo` };
+    return { icon:'💵', label:'AI estimates rent' };
+  })();
+
+  const extras = [
     fields.hoaMonthly ? `HOA $${fields.hoaMonthly}/mo` : '',
     adv.closingCostPct ? `Closing ${adv.closingCostPct}%` : '',
     (parseFloat(profile.downPaymentPct) || 20) < 20 && !profile.cashPurchase ? 'PMI applies' : '',
+    fields.houseHack ? 'House hack — Unit 1 owner-occupied' : '',
   ].filter(Boolean).join(' · ');
 
   return (
@@ -588,11 +744,19 @@ export function ConfirmCard({ fields, adv, mode, profile, onConfirm, onBack }) {
           { icon:'📅', label:`${holdYrs}-yr hold` },
           { icon:'⚖️', label:`${MODES[mode]?.label || mode} mode` },
           { icon:'🔧', label:adv.selfManage ? 'Self-managed' : 'Pro-managed' },
-          fields.beds  ? { icon:'🛏',  label:`${fields.beds}bd/${fields.baths}ba` } : null,
-          fields.sqft  ? { icon:'📐', label:`${fields.sqft} sqft` }               : null,
-          fields.year  ? { icon:'🗓', label:`Built ${fields.year}` }               : null,
-          fields.rent  ? { icon:'💵', label:`Rent ${fields.rent}` }               : { icon:'💵', label:'AI estimates rent' },
-          fields.taxAnnual ? { icon:'🏛', label:`Tax $${fields.taxAnnual}/yr` }   : null,
+          fields.beds  ? { icon:'🛏',  label:`${fields.beds}bd/${fields.baths}ba` }  : null,
+          fields.sqft  ? { icon:'📐', label:`${fields.sqft} sqft` }                 : null,
+          fields.year  ? { icon:'🗓', label:`Built ${fields.year}` }                : null,
+          incomeChip,
+          fields.taxAnnual ? { icon:'🏛', label:`Tax $${fields.taxAnnual}/yr` }     : null,
+          // Show per-unit breakdown for MFR when unit rents are entered
+          ...(isMFR && unitRentsHaveValues
+            ? (fields.unitRents || []).map((r, i) => r ? { icon:'🏠', label:`Unit ${i+1}: $${r}/mo` } : null)
+            : []),
+          // Show description badge if provided
+          fields.listingDescription?.trim().length > 20
+            ? { icon:'📄', label:'Description included' }
+            : null,
         ].filter(Boolean).map((item, i) => (
           <span key={i} style={{ display:'inline-flex', alignItems:'center', gap:4, background:C.soft, border:`1px solid ${C.border}`, borderRadius:8, padding:'4px 10px', fontSize:12, color:C.text, fontWeight:500 }}>
             <span style={{ fontSize:11 }}>{item.icon}</span>{item.label}

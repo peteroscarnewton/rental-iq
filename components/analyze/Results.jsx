@@ -307,9 +307,9 @@ export function Results({
 
       {/* Row 7: Rent Scenarios + Stress Panel side-by-side */}
       <Reveal delay="riq-d2">
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }} className="riq-g2">
-          <div className="riq-lift"><RentScenarios data={data} /></div>
-          <div className="riq-lift"><StressPanel data={data} /></div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 14 }} className="riq-g2">
+          <div className="riq-lift" style={{ minWidth: 0, overflow: 'hidden' }}><RentScenarios data={data} /></div>
+          <div className="riq-lift" style={{ minWidth: 0, overflow: 'hidden' }}><StressPanel data={data} /></div>
         </div>
       </Reveal>
 

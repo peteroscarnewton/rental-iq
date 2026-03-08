@@ -679,9 +679,9 @@ export default function Scout() {
         {/* Nav */}
         <nav style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(245,245,248,0.9)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderBottom: `1px solid ${C.border}`, padding: '0 28px' }}>
           <div style={{ maxWidth: 1160, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 52 }}>
-            <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
-              <div style={{ width: 8, height: 8, background: C.green, borderRadius: '50%' }}/>
-              <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: C.text }}>RentalIQ</span>
+            <Link href="/" style={{ display: 'flex', alignItems: 'center', textDecoration: 'none' }}>
+              
+              <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.01em', color: C.text }}>RentalIQ</span>
             </Link>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{ display: 'inline-flex', background: C.soft, borderRadius: 10, padding: 3, gap: 3 }}>
@@ -826,7 +826,7 @@ export default function Scout() {
                     Paste any Zillow or Redfin URL into RentalIQ for a full cap rate, cash flow, IRR, and buy/pass verdict in 30 seconds.
                   </div>
                   <Link href="/analyze" style={{ display: 'inline-block', background: C.green, color: '#fff', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 700, textDecoration: 'none', boxShadow: '0 4px 16px rgba(22,102,56,0.3)' }}>
-                    Analyze a Listing →
+                    Analyze →
                   </Link>
                 </div>
               )}
