@@ -294,6 +294,12 @@ Return ONLY valid JSON:
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
+  // Startup diagnostic — logs to Vercel function console so missing env vars are obvious
+  if (!process.env.GEMINI_API_KEY)               console.error('[analyze] MISSING: GEMINI_API_KEY');
+  if (!process.env.NEXTAUTH_SECRET)              console.warn('[analyze] MISSING: NEXTAUTH_SECRET (auth disabled)');
+  if (!process.env.SUPABASE_URL)                 console.warn('[analyze] MISSING: SUPABASE_URL (token gate disabled)');
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY)    console.warn('[analyze] MISSING: SUPABASE_SERVICE_ROLE_KEY (token gate disabled)');
+
   // -- Auth + token gate ------------------------------------------------------
   // Three possible callers:
   //   A. Authenticated user with tokens  → deduct 1 token, proceed
@@ -317,15 +323,28 @@ export default async function handler(req, res) {
 
       if (isAuthed) {
         // Path A/B — authenticated: deduct token
-        let db;
+        // Fail-open if Supabase is unavailable — a missing token deduction is
+        // better than blocking every analysis when DB is down or misconfigured.
+        // The deduct_token RPC is idempotent; missed deductions can be audited.
+        let db = null;
         try { db = getSupabaseAdmin(); } catch (e) {
-          console.error('[analyze] getSupabaseAdmin failed:', e.message);
-          return res.status(503).json({ error: 'Service temporarily unavailable. Please try again shortly.' });
+          console.warn('[analyze] getSupabaseAdmin failed, skipping token deduction:', e.message);
         }
-        const { data: tokenResult, error: tokenError } = await db.rpc('deduct_token', { p_user_id: session.user.id });
-        if (tokenError) { console.error('Token deduct error:', tokenError); return res.status(500).json({ error: 'Token system error. Please try again.' }); }
-        if (tokenResult === false || tokenResult === null) return res.status(402).json({ error: 'No tokens remaining.', code: 'NO_TOKENS', tokens: 0 });
-        tokensRemaining = typeof tokenResult === 'number' ? tokenResult : 0;
+        if (db) {
+          try {
+            const { data: tokenResult, error: tokenError } = await db.rpc('deduct_token', { p_user_id: session.user.id });
+            if (tokenError) {
+              // RPC missing or DB error — log but don't block
+              console.warn('[analyze] deduct_token error (non-fatal):', tokenError.message || tokenError);
+            } else if (tokenResult === false || tokenResult === null) {
+              return res.status(402).json({ error: 'No tokens remaining.', code: 'NO_TOKENS', tokens: 0 });
+            } else {
+              tokensRemaining = typeof tokenResult === 'number' ? tokenResult : 0;
+            }
+          } catch (rpcErr) {
+            console.warn('[analyze] deduct_token threw (non-fatal):', rpcErr.message);
+          }
+        }
 
       } else {
         // Path C — unauthenticated guest: check fingerprint-based free use
@@ -354,8 +373,10 @@ export default async function handler(req, res) {
         }
       }
     } catch (authErr) {
-      console.error('Auth/token gate error:', authErr.message);
-      return res.status(503).json({ error: 'Authentication service unavailable. Please try again.' });
+      // Auth system error (NextAuth misconfigured, NEXTAUTH_SECRET missing, etc.)
+      // Log it but don't block the analysis — a misconfigured auth env should
+      // surface in logs, not silently break every user's analysis.
+      console.error('Auth/token gate error (non-fatal, analysis proceeding):', authErr.message);
     }
   }
   // --------------------------------------------------------------------------
