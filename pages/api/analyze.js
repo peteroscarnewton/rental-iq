@@ -1083,7 +1083,14 @@ export default async function handler(req, res) {
   const geminiPayload = {
     system_instruction: { parts: [{ text: SYSTEM_PROMPT_TEMPLATE(settings) }] },
     contents: [{ role: 'user', parts: [{ text: userMsg }] }],
-    generationConfig: { temperature: 0, maxOutputTokens: 16000 },
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 4096,  // actual output is ~2500-3500 tokens; 4096 is a safe ceiling
+      // Disable extended thinking — Gemini 2.5 Flash burns thinking tokens before
+      // producing output when given a large budget, adding 10-30s of invisible latency.
+      // We don't need reasoning traces for structured JSON output.
+      thinkingConfig: { thinkingBudget: 0 },
+    },
   };
 
   let geminiRes, modelUsed;
@@ -1264,4 +1271,4 @@ export default async function handler(req, res) {
   return res.status(200).json(responsePayload);
 }
 
-export const config = { maxDuration: 90 };
+export const config = { maxDuration: 60 };

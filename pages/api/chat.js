@@ -75,7 +75,7 @@ export default async function handler(req, res) {
   const geminiPayload = {
     system_instruction: { parts: [{ text: CHAT_SYSTEM_PROMPT }] },
     contents: [{ role: 'user', parts: [{ text: contextMsg }] }],
-    generationConfig: { temperature: 0.3, maxOutputTokens: 8192 },
+    generationConfig: { temperature: 0.3, maxOutputTokens: 4096, thinkingConfig: { thinkingBudget: 0 } },
   };
 
   let geminiRes;

@@ -482,7 +482,7 @@ export default function Home() {
       setStage('loading');startSteps();
       // Scroll loading spinner into view immediately on mobile — prevents double-tap
       setTimeout(()=>loadingRef.current?.scrollIntoView({behavior:'smooth',block:'start'}),30);
-    const tid=setTimeout(()=>{stopSteps();setErrMsg('Timed out - please try again.');setStage('error');},90000);
+    const tid=setTimeout(()=>{stopSteps();setErrMsg('Analysis is taking longer than usual — please try again.');setStage('error');},58000);
     try {
       const data=await fetchAnalysis();
       clearTimeout(tid);stopSteps();
