@@ -645,69 +645,73 @@ export default async function handler(req, res) {
     console.warn("[analyze] Supabase unavailable, skipping live enrichment:", e.message);
   }
 
-  let buildingPermits = null;
-  let metroGrowth = null;
-
-  if (cbsaCode) {
-    [buildingPermits, metroGrowth] = await Promise.all([
-      getBuildingPermits(db, cbsaCode),
-      getMetroGrowth(db, cbsaCode),
-    ]);
-  }
-
-  // Phase 7: Market Context — cap rates, HVS vacancy, city rent control, SAFMR, mgmt fees
-  // All null-safe: missing data gracefully omitted from prompt and response
+  // ── Parallel enrichment with hard 10s deadline ───────────────────────────
+  // All pre-Gemini DB/network fetches run in parallel so slow Supabase connections
+  // can't serially stack and eat the entire 60s Vercel budget.
+  // Every fetch is null-safe — a timeout or error just means that block is omitted
+  // from the AI prompt; the analysis still runs with static fallbacks.
   const marketCapRate = getCapRateForCity(city, propertyType || 'sfr');
   const mgmtFeeData   = getMgmtFeeForCity(city);
+  const taxTrend      = getTaxTrendForState(stateCode);
+  const _rcCity       = city?.split(',')[0]?.trim() || '';
+  const _rcSlug       = `${_rcCity.toLowerCase().replace(/[^a-z0-9]+/g,'_')}_${(stateCode||'').toLowerCase()}`;
+  const safmrData     = null;
 
-  // HVS vacancy — from Supabase cache (populated by cron)
-  const hvsData     = await getHvsVacancy(db);
+  const deadline = (ms) => new Promise(r => setTimeout(r, ms, null));
 
-  // City rent control — static lookup (instantaneous, no I/O)
-  // Phase 9: prefer live-cached rent control data (auto-heals when laws change)
-  const _rcCity = city?.split(',')[0]?.trim() || '';
-  const _rcSlug = `${_rcCity.toLowerCase().replace(/[^a-z0-9]+/g,'_')}_${(stateCode||'').toLowerCase()}`;
-  const cityRentCtrl = db
-    ? (await getCityRentControlLive(db, _rcSlug)) || getCityRentControl(_rcCity, stateCode || '')
-    : getCityRentControl(_rcCity, stateCode || '');
+  const [
+    buildingPermits,
+    metroGrowth,
+    hvsData,
+    cityRentCtrl,
+    strReg,
+    marketRentData,
+    landlordLawRaw,
+  ] = await Promise.all([
+    // Building permits + metro growth (CBSA-gated)
+    cbsaCode && db ? getBuildingPermits(db, cbsaCode).catch(() => null) : Promise.resolve(null),
+    cbsaCode && db ? getMetroGrowth(db, cbsaCode).catch(() => null)    : Promise.resolve(null),
 
-  // Note: SAFMR rent is fetched client-side via /api/safmr-rent after neighborhood
-  // enrichment provides the ZIP code. It is not available here since the frontend
-  // does not send a zip in the analysis body.
-  const safmrData = null;
+    // HVS vacancy
+    db ? Promise.race([getHvsVacancy(db).catch(() => null), deadline(4000)]) : Promise.resolve(null),
 
-  // Phase 8: Living Intelligence Layer — tax trend and STR regulation are static lookups.
-  // Climate risk full data is fetched client-side via /api/climate-risk (requires geocoded FIPS).
-  // Tax trend: static table lookup, instantaneous, no I/O
-  const taxTrend = getTaxTrendForState(stateCode);
-  // STR regulation: static lookup — relevant for SFR/condo only
-  const strReg = (propertyType === 'sfr' || propertyType === 'sfr_adu' || propertyType === 'condo' || !propertyType)
-    ? (db ? (await getStrRegulationLive(db, city?.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/_+$/,''))) || getStrRegulation(city) : getStrRegulation(city))
-    : null;
+    // City rent control (live preferred, static fallback)
+    db
+      ? Promise.race([getCityRentControlLive(db, _rcSlug).catch(() => null), deadline(4000)])
+          .then(live => live || getCityRentControl(_rcCity, stateCode || ''))
+      : Promise.resolve(getCityRentControl(_rcCity, stateCode || '')),
 
-  // -- Fetch real market rent data before calling Gemini ---------------------
-  // Grounds AI rent estimate in HUD FMR + Census ACS real data.
-  // Only fetched when rent is not user-provided.
-  let marketRentData = null;
-  if (!rent) {
-    try {
-      // Resolve the internal base URL correctly across all environments:
-      // - NEXTAUTH_URL: explicitly set in production (canonical domain)
-      // - VERCEL_URL: auto-set by Vercel for all deployments (no https:// prefix)
-      // - localhost fallback: local dev only
+    // STR regulation
+    (propertyType === 'sfr' || propertyType === 'sfr_adu' || propertyType === 'condo' || !propertyType) && db
+      ? Promise.race([
+          getStrRegulationLive(db, city?.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/_+$/, '')).catch(() => null),
+          deadline(4000),
+        ]).then(live => live || getStrRegulation(city))
+      : Promise.resolve(
+          (propertyType === 'sfr' || propertyType === 'sfr_adu' || propertyType === 'condo' || !propertyType)
+            ? getStrRegulation(city)
+            : null
+        ),
+
+    // Internal rent-estimate fetch (skipped if rent is user-provided)
+    !rent ? (() => {
       const vercelUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
-      const baseUrl = process.env.NEXTAUTH_URL || vercelUrl || 'http://localhost:3000';
-      const rentRes = await fetch(`${baseUrl}/api/rent-estimate`, {
+      const baseUrl   = process.env.NEXTAUTH_URL || vercelUrl || 'http://localhost:3000';
+      return fetch(`${baseUrl}/api/rent-estimate`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-internal': '1' },
         body: JSON.stringify({ city, beds: beds || 2, zip: null }),
-        signal: AbortSignal.timeout(8000),
-      });
-      if (rentRes.ok) marketRentData = await rentRes.json();
-    } catch (e) {
-      console.warn('Rent estimate fetch failed (non-fatal):', e.message);
-    }
-  }
+        signal: AbortSignal.timeout(6000),
+      }).then(r => r.ok ? r.json() : null).catch(() => null);
+    })() : Promise.resolve(null),
+
+    // Landlord law (live preferred, static fallback)
+    stateCode && db
+      ? Promise.race([getLandlordLawLive(db, stateCode).catch(() => null), deadline(4000)])
+      : Promise.resolve(null),
+  ]);
+
+  if (marketRentData?.mid) settings.marketRent = marketRentData;
 
   const rentAnchorLines = marketRentData?.mid ? [
     '',
@@ -720,42 +724,34 @@ export default async function handler(req, res) {
     '===',
   ] : [];
 
-  if (marketRentData?.mid) settings.marketRent = marketRentData;
-
-  // ── Landlord law structured data (Phase 2D) ─────────────────────────────
-  // Phase 9: try to use live landlord law data from cache
+  // ── Landlord law block — built from parallel-fetched landlordLawRaw ────────
   let landlordLawBlock = '';
   if (stateCode) {
-    if (db) {
-      const liveLaw = await getLandlordLawLive(db, stateCode);
-      if (liveLaw) {
-        // formatLandlordLawPrompt reads from the static table — pass live data directly
-        const rc = liveLaw.rentControlState
-          ? 'YES — statewide rent stabilization/control in effect'
-          : liveLaw.rentControlPreempted
-            ? 'NO — state law preempts all local rent control'
-            : liveLaw.rentControlLocalOk
-              ? 'State: none — but cities MAY have local ordinances (check city)'
-              : 'No rent control at any level';
-        landlordLawBlock = [
-          `LANDLORD LAW DATA FOR ${stateCode} — inject into landlordScore:`,
-          `- Eviction notice to pay or quit: ${liveLaw.evictionNoticeDays} days${liveLaw._evictionSource ? ` (${liveLaw._evictionSource}, ${liveLaw._evictionAsOf})` : ''}`,
-          `- Rent control: ${rc}`,
-          `- Just cause eviction required: ${liveLaw.justCauseRequired ? 'YES — must have qualifying reason' : 'No'}`,
-          `- Mandatory grace period before late fee: ${liveLaw.mandatoryGracePeriod ? 'YES' : 'No'}`,
-          `- Security deposit limit: ${liveLaw.secDepositMaxMonths > 0 ? `${liveLaw.secDepositMaxMonths} months` : 'No statutory limit'}`,
-          `- Landlord-friendliness score (0–100): ${liveLaw.score}`,
-          `- Key caveats: ${liveLaw.notes}`,
-          ``,
-          `Use score ${liveLaw.score} as the anchor for landlordScore. `,
-          `Adjust ±5 pts if the specific city (${city || 'unknown'}) has known local ordinances `,
-          `significantly more or less restrictive than the state default noted above.`,
-          `Do NOT hallucinate eviction timelines or rent control status — use only the data above.`,
-          `NOTE: This data reflects laws as of ${liveLaw._evictionAsOf || '2025'}. Laws can change — instruct the user to verify with a local real estate attorney for current requirements.`,
-        ].join('\n');
-      } else {
-        landlordLawBlock = formatLandlordLawPrompt(stateCode, city);
-      }
+    const liveLaw = landlordLawRaw;
+    if (liveLaw) {
+      const rc = liveLaw.rentControlState
+        ? 'YES — statewide rent stabilization/control in effect'
+        : liveLaw.rentControlPreempted
+          ? 'NO — state law preempts all local rent control'
+          : liveLaw.rentControlLocalOk
+            ? 'State: none — but cities MAY have local ordinances (check city)'
+            : 'No rent control at any level';
+      landlordLawBlock = [
+        `LANDLORD LAW DATA FOR ${stateCode} — inject into landlordScore:`,
+        `- Eviction notice to pay or quit: ${liveLaw.evictionNoticeDays} days${liveLaw._evictionSource ? ` (${liveLaw._evictionSource}, ${liveLaw._evictionAsOf})` : ''}`,
+        `- Rent control: ${rc}`,
+        `- Just cause eviction required: ${liveLaw.justCauseRequired ? 'YES — must have qualifying reason' : 'No'}`,
+        `- Mandatory grace period before late fee: ${liveLaw.mandatoryGracePeriod ? 'YES' : 'No'}`,
+        `- Security deposit limit: ${liveLaw.secDepositMaxMonths > 0 ? `${liveLaw.secDepositMaxMonths} months` : 'No statutory limit'}`,
+        `- Landlord-friendliness score (0–100): ${liveLaw.score}`,
+        `- Key caveats: ${liveLaw.notes}`,
+        ``,
+        `Use score ${liveLaw.score} as the anchor for landlordScore.`,
+        `Adjust ±5 pts if the specific city (${city || 'unknown'}) has known local ordinances`,
+        `significantly more or less restrictive than the state default noted above.`,
+        `Do NOT hallucinate eviction timelines or rent control status — use only the data above.`,
+        `NOTE: This data reflects laws as of ${liveLaw._evictionAsOf || '2025'}. Laws can change — instruct the user to verify with a local real estate attorney.`,
+      ].join('\n');
     } else {
       landlordLawBlock = formatLandlordLawPrompt(stateCode, city);
     }
@@ -1268,4 +1264,4 @@ export default async function handler(req, res) {
   return res.status(200).json(responsePayload);
 }
 
-export const config = { maxDuration: 60 };
+export const config = { maxDuration: 90 };
