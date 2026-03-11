@@ -651,7 +651,19 @@ export default function Home() {
   }
 
   function handleChatUpdate(updated,label){setOrigResults(p=>p||results);setResults(updated);setScenario(label||'Updated');}
-  function reset(){setStage('input');setResults(null);setOrigResults(null);setScenario('');setIsEdited(false);setErrMsg('');setErrors({});setFields(EMPTY_FIELDS);setAdv(EMPTY_ADV);setMode('moderate');setProfileRaw(loadSavedProfile());setSavedDealId(null);
+
+  // Lock body scroll during loading so user can't scroll over blank page
+  useEffect(() => {
+    if (stage === 'loading') {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => { document.body.style.overflow = ''; };
+  }, [stage]);
+
+  function reset() {
+    setStage('input');setResults(null);setOrigResults(null);setScenario('');setIsEdited(false);setErrMsg('');setErrors({});setFields(EMPTY_FIELDS);setAdv(EMPTY_ADV);setMode('moderate');setProfileRaw(loadSavedProfile());setSavedDealId(null);
     setNeighborhood(null);setNeighborhoodLoading(false);savedDealIdRef.current=null;setFetchStatus(null);setFetchMsg('');setFieldStatus({});lastFetchedUrl.current='';setShowDemoGate(false);setAuthPrompt(false);
     // Phase 6 reset
     setFloodData(null);setFloodLoading(false);setSchoolData(null);_phase6ZipRef.current=null;

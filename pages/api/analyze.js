@@ -1268,6 +1268,39 @@ export default async function handler(req, res) {
   const responsePayload = tokensRemaining !== null
     ? { ...data, tokensRemaining }
     : data;
+
+  // ── Cache user-provided/confirmed listing fields for 90 days ─────────────
+  // If the request had a listingUrl, write the confirmed field values back to
+  // market_data_cache so any user pasting the same URL in future gets instant
+  // field population without an AI call. Covers partial manual entries too —
+  // whatever the user confirmed is what gets cached.
+  // Fire-and-forget: never block the response.
+  if (listingUrl) {
+    try {
+      const cacheDb = getSupabaseAdmin();
+      const { createHash } = await import('crypto');
+      const fieldCacheKey = 'listing:v2:' + createHash('sha256').update(listingUrl).digest('hex');
+      const fieldPayload = {
+        url: listingUrl,
+        price:       priceNum || null,
+        rent:        settings.effectiveRent || null,
+        beds:        beds   ? parseInt(beds)   : null,
+        baths:       baths  ? parseFloat(baths): null,
+        sqft:        sqft   ? parseInt(sqft)   : null,
+        year:        year   ? parseInt(year)   : null,
+        city:        city   || null,
+        propertyType: propertyType || null,
+        _source: 'user_confirmed',
+        _cachedAt: new Date().toISOString(),
+      };
+      const ttl = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+      cacheDb.from('market_data_cache').upsert(
+        { key: fieldCacheKey, value: JSON.stringify(fieldPayload), fetched_at: new Date().toISOString(), valid_until: ttl },
+        { onConflict: 'key' }
+      ).catch(e => console.warn('[analyze] field cache write failed:', e.message));
+    } catch (_) { /* non-critical */ }
+  }
+
   return res.status(200).json(responsePayload);
 }
 
