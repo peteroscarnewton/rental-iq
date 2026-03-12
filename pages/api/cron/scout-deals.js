@@ -265,7 +265,44 @@ export default async function handler(req, res) {
   }
 
   // ── Step 3: Discovery — search markets not recently covered ───────────────
-  const allMarkets  = getRankedMarkets({ goal: 'cashflow', priceMax: 400000, beds: 3 });
+  // Use live computed cap rates from Supabase cache if available so that
+  // market rankings reflect real Census ACS + HUD data, not hardcoded values.
+  // Falls back to static getRankedMarkets() if cache is empty or unavailable.
+  let allMarkets;
+  try {
+    const { data: capRateRow } = await db
+      .from('market_data_cache')
+      .select('value, valid_until')
+      .eq('key', 'market_cap_rates')
+      .single();
+    const liveCapRates = (capRateRow && new Date(capRateRow.valid_until) > new Date())
+      ? (typeof capRateRow.value === 'object' ? capRateRow.value?.byMetro : null)
+      : null;
+    if (liveCapRates && Object.keys(liveCapRates).length > 5) {
+      // Build a signals map and pass it through getRankedMarkets override approach:
+      // getRankedMarkets doesn't accept live signals directly, so we re-score
+      // after getting the static list by swapping in live cap rates.
+      const staticMarkets = getRankedMarkets({ goal: 'cashflow', priceMax: 400000, beds: 3 });
+      allMarkets = staticMarkets
+        .map(m => {
+          const live = liveCapRates[m.key];
+          if (!live?.sfr) return m;
+          const liveCapRate = parseFloat(live.sfr.toFixed(1));
+          const capScore    = Math.min(100, Math.max(0, (liveCapRate / 8.0) * 100));
+          const expScore    = Math.max(0, Math.min(100, 100 - ((m.taxRate + m.insRate - 0.5) / 3.5) * 100));
+          const apprScore   = Math.min(100, Math.max(0, ((m.appreciationRate - 2.0) / 3.0) * 100));
+          const base        = capScore * 0.40 + m.landlordScore * 0.30 + expScore * 0.15 + apprScore * 0.15;
+          const score       = Math.round(base * 0.6 + capScore * 0.4); // cashflow goal weighting
+          return { ...m, capRate: liveCapRate, score };
+        })
+        .sort((a, b) => b.score - a.score);
+      console.log('[scout-cron] Using live cap rates for market ranking');
+    } else {
+      allMarkets = getRankedMarkets({ goal: 'cashflow', priceMax: 400000, beds: 3 });
+    }
+  } catch {
+    allMarkets = getRankedMarkets({ goal: 'cashflow', priceMax: 400000, beds: 3 });
+  }
   const todayMarkets = await selectMarketsForToday(db, allMarkets);
 
   for (const market of todayMarkets) {

@@ -29,7 +29,8 @@ import { fetchAllFredData,
          hasMetroUnemploymentData }  from '../../../lib/fredFetcher.js';
 import { fetchFhfaHpi }             from '../../../lib/fhfaFetcher.js';
 import { fetchAllCaseShillerMetros } from '../../../lib/caseShillerFetcher.js';
-import { fetchRedfinZips }           from '../../../lib/redfinFetcher.js';
+import { fetchRedfinZips,
+         fetchRedfinCities }         from '../../../lib/redfinFetcher.js';
 import { fetchBuildingPermits, fetchMetroGrowth, resolveCbsaForCity } from '../../../lib/supplyDemandFetcher.js';
 import {
   fetchHvsVacancy,
@@ -86,6 +87,7 @@ const TTL = {
   case_shiller:           30 * 24 * 60 * 60 * 1000,  // 30 days (monthly release, 60-day lag)
   employment:             14 * 24 * 60 * 60 * 1000,  // 14 days (monthly BLS LAUS release)
   redfin:                  7 * 24 * 60 * 60 * 1000,  // 7 days (weekly Redfin update)
+  redfin_city:             7 * 24 * 60 * 60 * 1000,  // 7 days (city_market_tracker, weekly)
   // Phase 5 TTLs
   treasury_yield:          1 * 24 * 60 * 60 * 1000,  // 1 day  (FRED DGS10, daily)
   sp500_returns:           1 * 24 * 60 * 60 * 1000,  // 1 day  (FRED SP500, daily)
@@ -523,6 +525,99 @@ export default async function handler(req, res) {
       }
     } catch (err) {
       errors.push({ key: 'redfin', error: err.message });
+    }
+  }
+
+  // ── Redfin City Market Data (Scout listing counts + price reduction signals) ──
+  // Streams Redfin's city_market_tracker.tsv000.gz once and extracts all 55
+  // Scout metros in a single pass. Provides: inventory (active listing count),
+  // price_drops (% of listings with a price cut), market temp, DOM.
+  // Updated weekly — same TTL as ZIP-level data.
+  {
+    const SCOUT_CITY_TARGETS = [
+      { metro:'memphis',        city:'Memphis',        state:'TN' },
+      { metro:'detroit',        city:'Detroit',        state:'MI' },
+      { metro:'cleveland',      city:'Cleveland',      state:'OH' },
+      { metro:'birmingham',     city:'Birmingham',     state:'AL' },
+      { metro:'jackson',        city:'Jackson',        state:'MS' },
+      { metro:'little rock',    city:'Little Rock',    state:'AR' },
+      { metro:'oklahoma city',  city:'Oklahoma City',  state:'OK' },
+      { metro:'tulsa',          city:'Tulsa',          state:'OK' },
+      { metro:'kansas city',    city:'Kansas City',    state:'MO' },
+      { metro:'st. louis',      city:'St. Louis',      state:'MO' },
+      { metro:'pittsburgh',     city:'Pittsburgh',     state:'PA' },
+      { metro:'indianapolis',   city:'Indianapolis',   state:'IN' },
+      { metro:'columbus',       city:'Columbus',       state:'OH' },
+      { metro:'cincinnati',     city:'Cincinnati',     state:'OH' },
+      { metro:'louisville',     city:'Louisville',     state:'KY' },
+      { metro:'buffalo',        city:'Buffalo',        state:'NY' },
+      { metro:'jacksonville',   city:'Jacksonville',   state:'FL' },
+      { metro:'tampa',          city:'Tampa',          state:'FL' },
+      { metro:'orlando',        city:'Orlando',        state:'FL' },
+      { metro:'cape coral',     city:'Cape Coral',     state:'FL' },
+      { metro:'fort myers',     city:'Fort Myers',     state:'FL' },
+      { metro:'charlotte',      city:'Charlotte',      state:'NC' },
+      { metro:'raleigh',        city:'Raleigh',        state:'NC' },
+      { metro:'atlanta',        city:'Atlanta',        state:'GA' },
+      { metro:'nashville',      city:'Nashville',      state:'TN' },
+      { metro:'houston',        city:'Houston',        state:'TX' },
+      { metro:'dallas',         city:'Dallas',         state:'TX' },
+      { metro:'san antonio',    city:'San Antonio',    state:'TX' },
+      { metro:'el paso',        city:'El Paso',        state:'TX' },
+      { metro:'albuquerque',    city:'Albuquerque',    state:'NM' },
+      { metro:'phoenix',        city:'Phoenix',        state:'AZ' },
+      { metro:'tucson',         city:'Tucson',         state:'AZ' },
+      { metro:'las vegas',      city:'Las Vegas',      state:'NV' },
+      { metro:'chicago',        city:'Chicago',        state:'IL' },
+      { metro:'minneapolis',    city:'Minneapolis',    state:'MN' },
+      { metro:'milwaukee',      city:'Milwaukee',      state:'WI' },
+      { metro:'omaha',          city:'Omaha',          state:'NE' },
+      { metro:'richmond',       city:'Richmond',       state:'VA' },
+      { metro:'baltimore',      city:'Baltimore',      state:'MD' },
+      { metro:'miami',          city:'Miami',          state:'FL' },
+      { metro:'fort lauderdale',city:'Fort Lauderdale',state:'FL' },
+      { metro:'austin',         city:'Austin',         state:'TX' },
+      { metro:'denver',         city:'Denver',         state:'CO' },
+      { metro:'salt lake city', city:'Salt Lake City', state:'UT' },
+      { metro:'boise',          city:'Boise',          state:'ID' },
+      { metro:'portland',       city:'Portland',       state:'OR' },
+      { metro:'seattle',        city:'Seattle',        state:'WA' },
+      { metro:'washington',     city:'Washington',     state:'DC' },
+      { metro:'boston',         city:'Boston',         state:'MA' },
+      { metro:'new york',       city:'New York',       state:'NY' },
+      { metro:'los angeles',    city:'Los Angeles',    state:'CA' },
+      { metro:'san diego',      city:'San Diego',      state:'CA' },
+      { metro:'san francisco',  city:'San Francisco',  state:'CA' },
+      { metro:'san jose',       city:'San Jose',       state:'CA' },
+      { metro:'honolulu',       city:'Honolulu',       state:'HI' },
+    ];
+
+    // Only refresh metros whose cache is stale
+    const staleTargets = [];
+    for (const t of SCOUT_CITY_TARGETS) {
+      if (await needsRefresh(`redfin_city:${t.metro}`)) {
+        staleTargets.push(t);
+      }
+    }
+
+    if (staleTargets.length === 0) {
+      skipped.push('redfin_city (all within TTL)');
+    } else {
+      try {
+        console.log(`[cron] Redfin city: fetching ${staleTargets.length} stale metros…`);
+        const cityResults = await fetchRedfinCities(staleTargets);
+        if (cityResults.size === 0) {
+          errors.push({ key: 'redfin_city', error: 'fetchRedfinCities returned empty — check S3 URL or stream timeout' });
+        } else {
+          for (const [metro, data] of cityResults) {
+            const ok = await upsert(`redfin_city:${metro}`, data, TTL.redfin_city);
+            if (ok) refreshed.push(`redfin_city:${metro}`);
+          }
+          console.log(`[cron] Redfin city: stored ${cityResults.size}/${staleTargets.length} metros`);
+        }
+      } catch (err) {
+        errors.push({ key: 'redfin_city', error: err.message });
+      }
     }
   }
 

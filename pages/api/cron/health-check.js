@@ -46,6 +46,8 @@ const ALERT_AGE_HOURS = {
   state_ins_rates:            380 * 24, // Annual NAIC/III live fetch — alert after 380 days
   str_data_sentinel:          100 * 24, // Quarterly STR batch — alert after 100 days
   climate_risk_sentinel:      380 * 24, // Annual FEMA NRI — alert after 380 days
+  // Scout listing counts (Redfin city tracker, weekly)
+  redfin_city_sentinel:        14 * 24, // Alert if any redfin_city key is >14 days old
 };
 
 export const config = { api: { bodyParser: false }, maxDuration: 20 };
@@ -163,6 +165,34 @@ export default async function handler(req, res) {
   } catch (err) {
     // Redfin S3 down = market pulse data won't refresh but existing cache still serves
     checks.push({ api: 'Redfin S3', status: 'warn', message: err.message });
+  }
+
+  // ── 7b. Redfin city cache freshness (Scout listing counts) ───────────────
+  try {
+    const db = getSupabaseAdmin();
+    const thresholdMs = ALERT_AGE_HOURS.redfin_city_sentinel * 3_600_000;
+    const { data: cityRows } = await db
+      .from('market_data_cache')
+      .select('key, fetched_at')
+      .like('key', 'redfin_city:%')
+      .order('fetched_at', { ascending: true })
+      .limit(1);  // oldest row
+    if (!cityRows || cityRows.length === 0) {
+      alerts.push({ type: 'stale_data', key: 'redfin_city', message: 'No redfin_city cache rows found — cron may not have run yet' });
+      checks.push({ key: 'redfin_city', status: 'warn', message: 'No data yet' });
+    } else {
+      const oldest     = cityRows[0];
+      const ageMs      = now - new Date(oldest.fetched_at).getTime();
+      const ageDays    = (ageMs / 86_400_000).toFixed(1);
+      if (ageMs > thresholdMs) {
+        alerts.push({ type: 'stale_data', key: 'redfin_city', message: `Oldest redfin_city row is ${ageDays} days old (${oldest.key})` });
+        checks.push({ key: 'redfin_city', status: 'stale', ageDays });
+      } else {
+        checks.push({ key: 'redfin_city', status: 'ok', ageDays });
+      }
+    }
+  } catch (err) {
+    checks.push({ key: 'redfin_city', status: 'error', message: err.message });
   }
 
   // ── 8. Upstream: FRED Case-Shiller ───────────────────────────────────────
